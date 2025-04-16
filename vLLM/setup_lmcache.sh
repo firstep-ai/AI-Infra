@@ -17,7 +17,7 @@ pip install -e .
 cd ..
 
 echo "安装 benchmarks/rag 目录下的依赖..."
-pip install -r benchmarks/rag/requirements.txt
+pip install -r LMCache/benchmarks/rag/requirements.txt
 
 echo "更新 apt 并安装 libibverbs 依赖..."
 apt update
