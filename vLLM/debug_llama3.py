@@ -1,3 +1,4 @@
+# pip install --upgrade vllm pyzmq
 import os
 os.environ["VLLM_USE_V1"] = "0"
 os.environ["HF_TOKEN"] = "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"
