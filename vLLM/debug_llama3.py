@@ -1,6 +1,6 @@
 # pip install --upgrade vllm pyzmq
 import os
-os.environ["VLLM_USE_V1"] = "0"
+# os.environ["VLLM_USE_V1"] = "0"
 os.environ["HF_TOKEN"] = "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"
 from vllm import LLM, SamplingParams
 chats = [[{"role": "user", "content": "What is the capital of France?"}], [{"role": "user", "content": "What is the capital of China?"}]]
