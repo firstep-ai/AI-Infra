@@ -1,0 +1,168 @@
+Binary files step7_pipeline_parallel_afab/__pycache__/data_parallel.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/data_parallel.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/dataloader.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/dataloader.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/model.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/model.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/pipeline_parallel.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/pipeline_parallel.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/process_group_manager.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/process_group_manager.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/tensor_parallel.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/tensor_parallel.cpython-39.pyc differ
+Binary files step7_pipeline_parallel_afab/__pycache__/utils.cpython-39.pyc and step8_pipeline_parallel_1f1b/__pycache__/utils.cpython-39.pyc differ
+diff -x '*.diff' --new-file -ur step7_pipeline_parallel_afab/pipeline_parallel.py step8_pipeline_parallel_1f1b/pipeline_parallel.py
+--- step7_pipeline_parallel_afab/pipeline_parallel.py	2024-11-17 14:49:34.000000000 +0000
++++ step8_pipeline_parallel_1f1b/pipeline_parallel.py	2024-11-17 13:39:38.000000000 +0000
+@@ -69,6 +69,59 @@
+     
+     # Return received tensor for receive operations, None for send operations
+     return tensor if not is_send else None
++
++def bidirectional_pipeline_communicate(operation, send_tensor, recv_shapes, device, dtype):
++    """
++    Handles bidirectional communication between pipeline stages, allowing simultaneous 
++    send and receive operations.
++    
++    Args:
++        operation (str): Type of bidirectional operation ('send_fwd_recv_bwd' or 'send_bwd_recv_fwd')
++        send_tensor: Tensor to be sent
++        recv_shapes: Shape specifications for the tensor to be received
++        device: Target device for tensor operations
++        dtype: Data type for tensors
++    
++    Returns:
++        torch.Tensor or None: Received tensor, or None if at terminal pipeline stage
++    """
++    global STEP
++    global VERBOSE
++    
++    # Determine if this is a forward operation
++    is_fwd = (operation == 'send_fwd_recv_bwd')
++    
++    # Skip if at terminal pipeline stages
++    if (is_fwd and pgm.process_group_manager.pp_is_last_stage) or \
++       (not is_fwd and pgm.process_group_manager.pp_is_first_stage): 
++        return None
++    
++    # Determine peer rank based on operation direction
++    peer_rank = pgm.process_group_manager.pp_next_rank if is_fwd else pgm.process_group_manager.pp_prev_rank
++    
++    # Create empty tensor for receiving data
++    recv_tensor = torch.empty(recv_shapes, requires_grad=True, device=device, dtype=dtype)
++    
++    # Set up simultaneous send and receive operations
++    reqs = dist.batch_isend_irecv([
++        dist.P2POp(dist.isend, send_tensor, peer_rank),
++        dist.P2POp(dist.irecv, recv_tensor, peer_rank)
++    ])
++    
++    if VERBOSE: 
++        print(f"{operation} | sending {'next' if is_fwd else 'prev'} "
++              f"{pgm.process_group_manager.pp_rank} -> {peer_rank} | "
++              f"receiving {'next' if is_fwd else 'prev'} {peer_rank} -> "
++              f"{pgm.process_group_manager.pp_rank} | STEP {STEP=} | "
++              f"RANK:{pgm.process_group_manager.pp_rank}", flush=True)
++    
++    # Wait for both operations to complete
++    [req.wait() for req in reqs]
++    torch.cuda.synchronize()
++    
++    if VERBOSE: STEP += 1
++    
++    return recv_tensor
+ ### end PP communications
+ 
+ ### begin Pipeline Parallel
+@@ -139,4 +192,68 @@
+ 
+     return logging_loss
+ 
++def train_step_pipeline_1f1b(model, data_loader, tensor_shapes, device, dtype):    
++    num_warmup_microbatches = min(pgm.process_group_manager.pp_world_size - pgm.process_group_manager.pp_rank - 1, data_loader.grad_acc_steps)
++    num_microbatches_remaining = data_loader.grad_acc_steps - num_warmup_microbatches
++    logging_loss, input_tensors, output_tensors  = 0.0, [], []
++    requires_grad_sync = pgm.process_group_manager.dp_world_size > 1
++    
++    def _forward_step(input_tensor):
++        batch = next(data_loader)
++        batch["hidden_states"] = input_tensor.to(device) if input_tensor is not None else input_tensor
++        output_tensor = model.forward(input_ids=batch["input_ids"].to(device), position_ids=batch["position_ids"].to(device), hidden_states=batch["hidden_states"])
++        
++        # calculate loss on the last stage
++        if pgm.process_group_manager.pp_is_last_stage:
++            output_tensor = F.cross_entropy(output_tensor.transpose(1, 2), batch["target_ids"].to(device), reduction='mean')
++            nonlocal logging_loss
++            logging_loss += output_tensor.item() / data_loader.grad_acc_steps
++        return output_tensor
++
++    # === Warmup forward passes ===
++    for _ in range(num_warmup_microbatches):
++        input_tensor = pipeline_communicate(operation='recv_forward', shapes=tensor_shapes, device=device, dtype=dtype)
++        output_tensor = _forward_step(input_tensor)
++        pipeline_communicate(operation='send_forward', tensor=output_tensor, device=device, dtype=dtype)
++        input_tensors.append(input_tensor)
++        output_tensors.append(output_tensor)
++
++    if num_microbatches_remaining > 0:
++        input_tensor = pipeline_communicate(operation='recv_forward', shapes=tensor_shapes, device=device, dtype=dtype)
++    
++    if requires_grad_sync:
++        model.require_backward_grad_sync = False
++
++    # === 1F1B steady state ===
++    for ith_microbatch in range(num_microbatches_remaining):
++        is_last_iteration = (ith_microbatch == num_microbatches_remaining - 1)
++        output_tensor = _forward_step(input_tensor)
++        output_tensor_grad = bidirectional_pipeline_communicate(operation='send_fwd_recv_bwd', send_tensor=output_tensor, recv_shapes=tensor_shapes, device=device, dtype=dtype)
++        input_tensors.append(input_tensor)
++        output_tensors.append(output_tensor)
++        input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
++        
++        # Trigger gradient sync on the last microbatch but only when last rank (the one that has num_warmup_microbatches = 0) has finished computing its backward pass.
++        if num_warmup_microbatches == 0 and is_last_iteration:
++            model.require_backward_grad_sync = True
++
++        input_tensor_grad = model.backward(input_tensor, output_tensor, output_tensor_grad)
++        
++        if is_last_iteration:
++            input_tensor = None
++            pipeline_communicate(operation='send_backward', tensor=input_tensor_grad, device=device, dtype=dtype)
++        else:
++            input_tensor = bidirectional_pipeline_communicate(operation='send_bwd_recv_fwd', send_tensor=input_tensor_grad, recv_shapes=tensor_shapes, device=device, dtype=dtype)
++
++    # === Cooldown backward passes ===
++    for ith_warmup_microbatches in range(num_warmup_microbatches):
++        if requires_grad_sync:
++            is_last_iteration = (ith_warmup_microbatches == num_warmup_microbatches - 1)
++            model.require_backward_grad_sync = (ith_warmup_microbatches == num_warmup_microbatches - 1)
++        input_tensor, output_tensor = input_tensors.pop(0), output_tensors.pop(0)
++        output_tensor_grad = pipeline_communicate(operation='recv_backward', shapes=tensor_shapes, device=device, dtype=dtype)
++        input_tensor_grad = model.backward(input_tensor, output_tensor, output_tensor_grad)
++        pipeline_communicate(operation='send_backward', tensor=input_tensor_grad, device=device, dtype=dtype)
++
++    return logging_loss
+ ### end Pipeline Parallel
+\ No newline at end of file
+diff -x '*.diff' --new-file -ur step7_pipeline_parallel_afab/train.py step8_pipeline_parallel_1f1b/train.py
+--- step7_pipeline_parallel_afab/train.py	2024-11-19 14:20:01.000000000 +0000
++++ step8_pipeline_parallel_1f1b/train.py	2024-11-19 14:21:00.000000000 +0000
+@@ -1,5 +1,5 @@
+ """
+-torchrun --nproc_per_node 4 train.py --pp_size 4 --pp_engine afab --micro_batch_size 4 --gradient_accumulation_steps 8 --seq_len 128 --max_tokens 40960 --num_proc 16 --run_name pp_afab --use_wandb
++torchrun --nproc_per_node 4 train.py --pp_size 4 --pp_engine 1f1b --micro_batch_size 4 --gradient_accumulation_steps 8 --seq_len 128 --max_tokens 40960 --num_proc 16 --run_name pp_1f1b --use_wandb
+ """
+ import os
+ import time
+@@ -21,7 +21,7 @@
+ from utils import set_all_seed, print, to_readable_format
+ 
+ from tensor_parallel import apply_tensor_parallel
+-from pipeline_parallel import PipelineParallel, train_step_pipeline_afab
++from pipeline_parallel import PipelineParallel, train_step_pipeline_afab, train_step_pipeline_1f1b
+ from data_parallel import DataParallelBucket
+ 
+ def all_reduce_loss_across_dp_ranks(loss, device):
+@@ -193,6 +193,8 @@
+         if pgm.process_group_manager.pp_world_size > 1:
+             if args.pp_engine == "afab":
+                 loss = train_step_pipeline_afab(model, dataloader, tensor_shapes, device, dtype)
++            elif args.pp_engine == "1f1b":
++                loss = train_step_pipeline_1f1b(model, dataloader, tensor_shapes, device, dtype)
+             else:
+                 raise ValueError(f"Invalid pipeline parallel engine: {args.pp_engine}")
+         else:    

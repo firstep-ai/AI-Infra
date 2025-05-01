@@ -1,0 +1,106 @@
+{
+  "$schema": "https://elio.dev/demo-time.schema.json",
+  "title": "Step 3: Dataloader",
+  "description": "",
+  "demos": [
+    {
+      "title": "new changes for step 3",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step3_dataloader/patch_step_3.diff"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> main train loop",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step3_dataloader/train.py"
+        },
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/train.py",
+          "position": "154:183"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> train_step",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step3_dataloader/train.py"
+        },
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/train.py",
+          "position": "23:44"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> class (part 1)",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step3_dataloader/dataloader.py"
+        },
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/dataloader.py",
+          "position": "23"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> tokenize_dataset",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/dataloader.py",
+          "position": "59:80"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> tokenizer_group_text",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/dataloader.py",
+          "position": "37:57"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> class (part 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/dataloader.py",
+          "position": "31"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> collate_batch",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step3_dataloader/dataloader.py",
+          "position": "82:97"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+    "demoTime.highlightBorderColor": "rgb(237, 18, 146)",
+    "demoTime.showClock": true,
+    "demoTime.timer": 60,
+    "demoTime.lineInsertionDelay": 0,
+    "workbench.colorCustomizations": {
+        "editor.selectionBackground": "#362a2a"
+    }
+  }

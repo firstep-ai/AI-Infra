@@ -1,0 +1,263 @@
+diff -x '*.diff' --new-file -ur step2_process_group_manager.py/dataloader.py step3_dataloader/dataloader.py
+--- step2_process_group_manager.py/dataloader.py	1970-01-01 00:00:00.000000000 +0000
++++ step3_dataloader/dataloader.py	2024-11-17 13:14:18.000000000 +0000
+@@ -0,0 +1,112 @@
++import torch
++from torch.utils.data import DataLoader
++import numpy as np
++from functools import partial
++from datasets import Features, Sequence, Value, load_dataset
++from transformers import AutoTokenizer
++
++import process_group_manager as pgm
++
++class MicroBatchDataLoader(DataLoader):
++    def __init__(self, seq_len, micro_batch_size, grad_acc_steps, dataset_name, tokenizer_name, max_tokens, num_workers, num_proc, split="train"):
++        
++        self.micro_batch_size = micro_batch_size
++        self.grad_acc_steps = grad_acc_steps
++        self.seq_len = seq_len
++
++        self.global_batch_size = micro_batch_size * grad_acc_steps * pgm.process_group_manager.dp_world_size
++
++        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
++        self.dataset = load_dataset(dataset_name, split=split)
++
++        # Tokenize and chunk the dataset
++        self.tokenized_dataset = self.tokenize_dataset(self.dataset, "text", self.seq_len, num_proc)
++        
++        total_tokens = self.tokenized_dataset.num_rows * (self.seq_len + 1)
++        assert total_tokens >= max_tokens, f"Not enough tokens. Have {total_tokens} tokens but need {max_tokens} tokens"
++
++        super().__init__(
++            self.tokenized_dataset,
++            batch_size=micro_batch_size,
++            collate_fn=self.collate_batch, 
++            pin_memory=True, 
++            num_workers=num_workers, 
++            shuffle=False,
++        )
++
++    def tokenizer_group_text(self, examples, tokenizer, sequence_length):
++        """Tokenize a list of texts and group them in chunks of sequence_length + 1"""
++        tokenized_text_batch = tokenizer.batch_encode_plus(
++            examples,
++            return_attention_mask=False,
++            return_token_type_ids=False,
++            return_tensors='np'
++        )
++        concatenated_tokens = {'input_ids': np.concatenate(tokenized_text_batch['input_ids'])}
++        total_length = len(concatenated_tokens['input_ids'])
++    
++        if total_length >= sequence_length + 1:
++            total_length = ((total_length - 1) // sequence_length) * sequence_length + 1
++
++        result = {
++            'input_ids': [
++                concatenated_tokens['input_ids'][i : i + sequence_length + 1]
++                for i in range(0, total_length - sequence_length, sequence_length)
++            ]
++        }
++        return result
++
++    def tokenize_dataset(self, dataset, text_column_name, sequence_length, num_proc):
++        """Tokenize the dataset and group texts in chunks of sequence_length + 1"""
++        tokenizer_func = partial(
++            self.tokenizer_group_text,
++            tokenizer=self.tokenizer,
++            sequence_length=sequence_length
++        )
++
++        tokenized_dataset = dataset.map(
++            tokenizer_func,
++            input_columns=text_column_name,
++            remove_columns=dataset.column_names,
++            features=Features({
++                "input_ids": Sequence(feature=Value(dtype="int64"), length=sequence_length + 1)
++            }),
++            batched=True,
++            num_proc=num_proc,
++            load_from_cache_file=True, # Preprocess dataset only once and cache it
++            desc=f"Grouping texts in chunks of {sequence_length+1}",
++        )
++
++        return tokenized_dataset
++
++    def collate_batch(self, batch):
++        batch_input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
++        batch_size = batch_input_ids.size(0)
++        input_ids = batch_input_ids[:, :-1].contiguous()
++        target_ids = batch_input_ids[:, 1:].contiguous()
++        position_ids = torch.arange(self.seq_len, dtype=torch.long).unsqueeze(0).expand(batch_size, -1).contiguous()
++        attn_mask = torch.tril(torch.ones((self.seq_len, self.seq_len), dtype=torch.bool))
++        attn_mask = attn_mask.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
++        
++        return {
++            "input_ids": input_ids,
++            "target_ids": target_ids,
++            "position_ids": position_ids,
++            "attn_mask": attn_mask,
++            "hidden_states": None
++        }
++    
++    def __iter__(self):
++        if self._iterator is None:
++            self._iterator = super().__iter__()
++        return self
++
++    def __next__(self):
++        if self._iterator is None:
++            self._iterator = super().__iter__()
++        try:
++            batch = next(self._iterator)
++        except StopIteration:
++            self._iterator = None
++            raise StopIteration
++        return batch
+\ No newline at end of file
+diff -x '*.diff' --new-file -ur step2_process_group_manager.py/train.py step3_dataloader/train.py
+--- step2_process_group_manager.py/train.py	2024-11-17 15:43:28.000000000 +0000
++++ step3_dataloader/train.py	2024-11-17 15:26:41.000000000 +0000
+@@ -1,7 +1,8 @@
+ """
+-torchrun --nproc_per_node 2 train.py --tp_size 2 --run_name process_group_manager --use_wandb
++torchrun --nproc_per_node 1 train.py --micro_batch_size 4 --gradient_accumulation_steps 8 --seq_len 128 --max_tokens 40960 --num_proc 16 --run_name dataloader --use_wandb
+ """
+ import os
++import time
+ import wandb
+ import datetime
+ import torch
+@@ -11,10 +12,36 @@
+ from torch.optim import AdamW
+ from transformers import AutoConfig
+ 
++import lovely_tensors as lt; lt.monkey_patch()
++
+ from model import Llama
++from dataloader import MicroBatchDataLoader
+ import process_group_manager as pgm
+ from process_group_manager import setup_process_group_manager
+-from utils import set_all_seed, print
++from utils import set_all_seed, print, to_readable_format
++
++def train_step(model, dataloader, device):
++    acc_loss = 0.0
++
++    for i in range(dataloader.grad_acc_steps):
++        # get the next batch
++        batch = next(dataloader)
++        input_ids = batch["input_ids"].to(device)
++        target_ids = batch["target_ids"].to(device)
++
++        outputs = model(input_ids=input_ids)
++
++        # compute the loss
++        batch_size, seq_len = input_ids.shape
++        target_ids = target_ids.reshape(-1)
++        outputs = outputs.view(seq_len*batch_size, -1)
++        loss = F.cross_entropy(outputs, target_ids, reduction='mean') / dataloader.grad_acc_steps
++
++        loss.backward()
++
++        acc_loss += loss.item()
++
++    return acc_loss
+ 
+ if __name__ == "__main__":    
+     parser = argparse.ArgumentParser(description="Training script for LLaMA model")
+@@ -29,11 +56,18 @@
+     parser.add_argument("--num_attention_heads", type=int, default=16)
+     parser.add_argument("--num_key_value_heads", type=int, default=4)
+ 
++    # Dataset arguments
++    parser.add_argument("--dataset_name", type=str, default="roneneldan/TinyStories")
++    parser.add_argument("--num_workers", type=int, default=1)
++    parser.add_argument("--num_proc", type=int, default=4)
++
+     # Training arguments
+     parser.add_argument("--seed", type=int, default=42)
+     parser.add_argument("--learning_rate", type=float, default=3e-4)
+     parser.add_argument("--seq_len", type=int, default=32)
+     parser.add_argument("--micro_batch_size", type=int, default=1)
++    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
++    parser.add_argument("--max_tokens", type=int, default=1e6)
+     
+     # Distributed training arguments
+     parser.add_argument("--tp_size", type=int, default=1, help="Tensor Parallel size")
+@@ -96,31 +130,52 @@
+ 
+     dist.barrier()
+     
+-    # Create dummy data
+-    input_ids = torch.randint(0, model_config.vocab_size, (args.micro_batch_size, args.seq_len), device=device)
+-    target_ids = torch.randint(0, model_config.vocab_size, (args.micro_batch_size, args.seq_len), device=device)
++    # Create dataloader
++    dataloader = MicroBatchDataLoader(
++        seq_len=args.seq_len,
++        micro_batch_size=args.micro_batch_size,
++        grad_acc_steps=args.gradient_accumulation_steps,
++        dataset_name=args.dataset_name,
++        tokenizer_name=args.model_name,
++        max_tokens=args.max_tokens,
++        num_workers=args.num_workers,
++        num_proc=args.num_proc,
++    )
++   
++    tokens_per_step = dataloader.global_batch_size * args.seq_len
++    if pgm.process_group_manager.global_rank == 0:
++        print("Tokens per step:", to_readable_format(tokens_per_step), is_print_rank=is_wandb_rank)
+ 
+-    # Training step
+-    optimizer.zero_grad()
+-    
+-    # Forward pass
+-    outputs = model(input_ids=input_ids)
+-    
+-    # Compute loss
+-    target_ids = target_ids.reshape(-1)
+-    outputs = outputs.view(-1, model_config.vocab_size)
+-    loss = F.cross_entropy(outputs, target_ids)
+-    
+-    # Backward pass
+-    loss.backward()
+-    
+-    # Optimizer step
+-    optimizer.step()
++    trained_token, step = 0, 0
+ 
+-    print(f"[rank {pgm.process_group_manager.global_rank}], Loss: {loss:.4f}")
+-       
+-    if is_wandb_rank and args.use_wandb:
+-        wandb.log({"loss": loss.item()})
++    dist.barrier()
++
++    # Training loop
++    while trained_token < args.max_tokens:
++
++        step_start_time = time.time()
++        optimizer.zero_grad()
++
++        loss = train_step(model, dataloader, device)
++
++        optimizer.step()
++
++        step_duration = time.time() - step_start_time
++        trained_token += tokens_per_step
++        step += 1
++    
++        print(f"[rank {pgm.process_group_manager.global_rank}] Step: {step}, Loss: {loss:.4f}, "
++            f"Global batch size (with seq_len): {to_readable_format(tokens_per_step)}, "
++            f"Tokens/s: {to_readable_format(tokens_per_step / step_duration)}, "
++            f"Tokens/s/GPU: {to_readable_format(tokens_per_step / step_duration / world_size)}, "
++            f"Tokens: {to_readable_format(trained_token)}{('/' + to_readable_format(args.max_tokens))}, "
++            f"Memory usage: {torch.cuda.memory_reserved() / 1e9:.2f}GB"
++            , is_print_rank=is_wandb_rank
++        )
++        
++        if is_wandb_rank and args.use_wandb:
++            wandb.log({"loss": loss, "tokens_per_step": tokens_per_step, "tokens_per_second": tokens_per_step / step_duration,\
++                "memory_usage": torch.cuda.memory_reserved() / 1e9, "trained_tokens": tokens_per_step})
+ 
+     if is_wandb_rank and args.use_wandb:
+         wandb.finish()

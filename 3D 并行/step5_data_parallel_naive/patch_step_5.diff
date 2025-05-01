@@ -1,0 +1,154 @@
+Binary files step4_tensor_parallel/__pycache__/data.cpython-39.pyc and step5_data_parallel_naive/__pycache__/data.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/data_parallel.cpython-39.pyc and step5_data_parallel_naive/__pycache__/data_parallel.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/dataloader.cpython-39.pyc and step5_data_parallel_naive/__pycache__/dataloader.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/model.cpython-39.pyc and step5_data_parallel_naive/__pycache__/model.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/process_group_manager.cpython-39.pyc and step5_data_parallel_naive/__pycache__/process_group_manager.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/tensor_parallel.cpython-39.pyc and step5_data_parallel_naive/__pycache__/tensor_parallel.cpython-39.pyc differ
+Binary files step4_tensor_parallel/__pycache__/utils.cpython-39.pyc and step5_data_parallel_naive/__pycache__/utils.cpython-39.pyc differ
+diff -x '*.diff' --new-file -ur step4_tensor_parallel/data_parallel.py step5_data_parallel_naive/data_parallel.py
+--- step4_tensor_parallel/data_parallel.py	1970-01-01 00:00:00.000000000 +0000
++++ step5_data_parallel_naive/data_parallel.py	2024-11-19 14:30:21.000000000 +0000
+@@ -0,0 +1,34 @@
++import contextlib
++from typing import List
++import torch
++import torch.distributed as dist
++from torch import nn
++
++import process_group_manager as pgm
++
++### begin Data Parallel (naive)
++class DataParallelNaive(nn.Module):
++    def __init__(self, module):
++        super().__init__()
++        self.module = module
++        # whether to synchronize gradients during backward pass. Set to False when using gradient accumulation
++        self.require_backward_grad_sync = True
++        self.register_backward_hook(self._allreduce_grads)
++    
++    def forward(self, *inputs, **kwargs):
++        return self.module(*inputs, **kwargs)
++    
++    def register_backward_hook(self, hook):
++        """Registers a backward hook for all parameters of the model that require gradients.""" 
++        for p in self.module.parameters():
++            if p.requires_grad is True:
++                p.register_hook(hook)
++                
++    def _allreduce_grads(self, grad):
++        """Performs an all-reduce operation to synchronize gradients across multiple processes."""
++        # No synchronization needed during gradient accumulation, except at the final accumulation step.
++        if self.require_backward_grad_sync:
++            dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=pgm.process_group_manager.dp_group)
++            grad /= pgm.process_group_manager.dp_world_size
++        return grad
++### end Data Parallel (naive)
+\ No newline at end of file
+diff -x '*.diff' --new-file -ur step4_tensor_parallel/dataloader.py step5_data_parallel_naive/dataloader.py
+--- step4_tensor_parallel/dataloader.py	2024-11-17 13:14:18.000000000 +0000
++++ step5_data_parallel_naive/dataloader.py	2024-11-17 15:10:41.000000000 +0000
+@@ -1,5 +1,5 @@
+ import torch
+-from torch.utils.data import DataLoader
++from torch.utils.data import DataLoader, DistributedSampler
+ import numpy as np
+ from functools import partial
+ from datasets import Features, Sequence, Value, load_dataset
+@@ -8,7 +8,7 @@
+ import process_group_manager as pgm
+ 
+ class MicroBatchDataLoader(DataLoader):
+-    def __init__(self, seq_len, micro_batch_size, grad_acc_steps, dataset_name, tokenizer_name, max_tokens, num_workers, num_proc, split="train"):
++    def __init__(self, seq_len, micro_batch_size, grad_acc_steps, dataset_name, tokenizer_name, max_tokens, num_workers, num_proc, seed, split="train"):
+         
+         self.micro_batch_size = micro_batch_size
+         self.grad_acc_steps = grad_acc_steps
+@@ -25,12 +25,21 @@
+         total_tokens = self.tokenized_dataset.num_rows * (self.seq_len + 1)
+         assert total_tokens >= max_tokens, f"Not enough tokens. Have {total_tokens} tokens but need {max_tokens} tokens"
+ 
++        self.sampler = DistributedSampler(
++            self.tokenized_dataset, 
++            num_replicas=pgm.process_group_manager.dp_world_size, 
++            rank=pgm.process_group_manager.dp_rank, 
++            seed=seed,
++            shuffle=False
++        )
++
+         super().__init__(
+             self.tokenized_dataset,
+             batch_size=micro_batch_size,
+             collate_fn=self.collate_batch, 
+             pin_memory=True, 
+             num_workers=num_workers, 
++            sampler=self.sampler,
+             shuffle=False,
+         )
+ 
+diff -x '*.diff' --new-file -ur step4_tensor_parallel/train.py step5_data_parallel_naive/train.py
+--- step4_tensor_parallel/train.py	2024-11-17 15:05:11.000000000 +0000
++++ step5_data_parallel_naive/train.py	2024-11-19 14:16:50.000000000 +0000
+@@ -1,5 +1,5 @@
+ """
+-torchrun --nproc_per_node 4 train.py --tp_size 4 --micro_batch_size 4 --gradient_accumulation_steps 8 --seq_len 128 --max_tokens 40960 --num_proc 16 --run_name tp_naive --use_wandb
++torchrun --nproc_per_node 4 train.py --dp_size 4 --micro_batch_size 1 --gradient_accumulation_steps 8 --seq_len 128 --max_tokens 40960 --num_proc 16 --run_name dp_naive --use_wandb
+ """
+ import os
+ import time
+@@ -21,16 +21,23 @@
+ from utils import set_all_seed, print, to_readable_format
+ 
+ from tensor_parallel import apply_tensor_parallel
++from data_parallel import DataParallelNaive
+ 
+ def train_step(model, dataloader, device):
+     acc_loss = 0.0
+ 
++    requires_grad_sync = pgm.process_group_manager.dp_world_size > 1
++
+     for i in range(dataloader.grad_acc_steps):
+         # get the next batch
+         batch = next(dataloader)
+         input_ids = batch["input_ids"].to(device)
+         target_ids = batch["target_ids"].to(device)
+ 
++        # enable gradient synchronization for the last micro-batch only
++        if requires_grad_sync:
++            model.require_backward_grad_sync = (i == dataloader.grad_acc_steps - 1)
++
+         outputs = model(input_ids=input_ids)
+ 
+         # compute the loss
+@@ -127,7 +134,13 @@
+     if pgm.process_group_manager.tp_world_size > 1:
+         model = apply_tensor_parallel(model)
+ 
++    # Need to move the model to the device before wrapping it with DataParallel.
++    # Otherwise, the hook will get attached to the CPU model and not the GPU model.
+     model.to(dtype).to(device)
++
++    if pgm.process_group_manager.dp_world_size > 1:
++        model = DataParallelNaive(model)
++    
+     model.train()
+ 
+     dist.barrier()
+@@ -146,6 +159,7 @@
+         max_tokens=args.max_tokens,
+         num_workers=args.num_workers,
+         num_proc=args.num_proc,
++        seed=args.seed,
+     )
+    
+     tokens_per_step = dataloader.global_batch_size * args.seq_len
+@@ -169,6 +183,10 @@
+         step_duration = time.time() - step_start_time
+         trained_token += tokens_per_step
+         step += 1
++
++        # In DDP implementation, we need to reset the gradient buffers
++        if hasattr(model, 'reset'):
++            model.reset()
+     
+         print(f"[rank {pgm.process_group_manager.global_rank}] Step: {step}, Loss: {loss:.4f}, "
+             f"Global batch size (with seq_len): {to_readable_format(tokens_per_step)}, "

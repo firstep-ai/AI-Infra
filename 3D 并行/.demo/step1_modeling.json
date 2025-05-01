@@ -1,0 +1,88 @@
+{
+  "$schema": "https://elio.dev/demo-time.schema.json",
+  "title": "Step 1: Modeling",
+  "description": "",
+  "demos": [
+    {
+      "title": "model.py -> Llama",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step1_modeling/model.py"
+        },
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/model.py",
+          "position": "135:148"
+        }
+      ]
+    },
+    {
+      "title": "model.py -> DecoderLayer",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/model.py",
+          "position": "100:116"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> args",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/train.py",
+          "position": "17:39"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> distributed setup",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/train.py",
+          "position": "41:54"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> model init",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/train.py",
+          "position": "58:66"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> optimizer init",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/train.py",
+          "position": "70"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> simple training loop",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step1_modeling/train.py",
+          "position": "74:97"
+        }
+      ]
+    }
+  ]
+}

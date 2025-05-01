@@ -1,0 +1,7 @@
+torch==2.1.0
+numpy==1.26.4
+datasets==2.19.1
+transformers==4.41.1
+flash-attn==2.5.0
+lovely_tensors
+wandb

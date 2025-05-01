@@ -1,0 +1,237 @@
+{
+  "$schema": "https://elio.dev/demo-time.schema.json",
+  "title": "Step 6: Data Parallel (bucket)",
+  "description": "",
+  "demos": [
+    {
+      "title": "new changes for step 6",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step6_data_parallel_bucket/patch_step_6.diff"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> DataParallelBucket (init)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "173:174"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (empty bucket)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "111:115"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (keep adding in bucket)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "123:124"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (full bucket)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "117:121"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (some infos on bucket)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "126:131"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (Create actual bucket)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "133:136"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> Bucket (Create actual bucket 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "38:52"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (maing_grad variable)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "138:144"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (register_backward_hook)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "188:211"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (_make_param_hook 1)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "224:22"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (_make_param_hook 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "229:238"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (autograd)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "229:238"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> BucketManager (mark_param_as_ready)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "159:162"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> Bucket (mark_param_as_ready)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "74:80"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py -> Bucket (sync_gradient)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "54:58"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (_post_backward 1)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "234"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (_post_backward 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "241:253"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  DataParallelBucket (bucket_manager.wait)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "241:253"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  BucketManager (wait)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "154:157"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel.py ->  Bucket (wait)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step6_data_parallel_bucket/data_parallel.py",
+          "position": "68:72"
+        }
+      ]
+    }
+  ]
+}

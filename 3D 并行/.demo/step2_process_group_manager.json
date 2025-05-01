@@ -1,0 +1,120 @@
+{
+  "$schema": "https://elio.dev/demo-time.schema.json",
+  "title": "Step 2: Process Group Manager",
+  "description": "",
+  "demos": [
+    {
+      "title": "new changes for step 2",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step2_process_group_manager/patch_step_2.diff"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> class",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step2_process_group_manager/process_group_manager.py"
+        },
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "5:50"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> assert",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "7:11"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> grid",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "13"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> find 3D coordinates of current process",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "15"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> process group",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "18:28"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> tensor parallel",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "30:33"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> pipeline parallel",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "35:42"
+        }
+      ]
+    },
+    {
+      "title": "process_group_manager.py -> data parallel",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/process_group_manager.py",
+          "position": "44:47"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> init process group",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step2_process_group_manager/train.py",
+          "position": "63:64"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://elio.dev/demo-time.schema.json",
+  "title": "Step 5: Data Parallel (naive)",
+  "description": "",
+  "demos": [
+    {
+      "title": "new changes for step 5",
+      "description": "",
+      "steps": [
+        {
+          "action": "open",
+          "path": "/step5_data_parallel_naive/patch_step_5.diff"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> reminder train loop (part 1)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/train.py",
+          "position": "174"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> reminder train loop (part 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/train.py",
+          "position": "179"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> reminder train loop (part 3)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/train.py",
+          "position": "31:49"
+        }
+      ]
+    },
+    {
+      "title": "train.py -> reminder train loop (part 4)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/train.py",
+          "position": "181"
+        }
+      ]
+    },
+    {
+      "title": "dataloader.py -> Distributed Sampler",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/dataloader.py",
+          "position": "28:34"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel -> last batch",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/train.py",
+          "position": "37:39"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel -> register_backward_hook (part 1)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/data_parallel.py",
+          "position": "16"
+        }
+      ]
+    },
+    {
+      "title": "data_parallel -> register_backward_hook (part 2)",
+      "description": "",
+      "steps": [
+        {
+          "action": "highlight",
+          "path": "/step5_data_parallel_naive/data_parallel.py",
+          "position": "21:33"
+        }
+      ]
+    }
+  ]
+}

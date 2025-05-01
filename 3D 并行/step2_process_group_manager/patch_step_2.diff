@@ -1,0 +1,135 @@
+diff -x '*.diff' --new-file -ur step1_modeling/process_group_manager.py step2_process_group_manager/process_group_manager.py
+--- step1_modeling/process_group_manager.py	1970-01-01 00:00:00.000000000 +0000
++++ step2_process_group_manager/process_group_manager.py	2024-11-17 15:40:02.000000000 +0000
+@@ -0,0 +1,54 @@
++import os
++import torch
++import torch.distributed as dist
++
++class ProcessGroupManager:
++    def __init__(self, dp_size, pp_size, tp_size):
++        self.global_rank = dist.get_rank()
++        self.world_size = dist.get_world_size()
++        self.local_rank = int(os.environ.get("LOCAL_RANK", self.global_rank % self.world_size))
++        
++        assert self.world_size == dp_size * pp_size * tp_size, f"World size ({self.world_size}) != DP ({self.dp_size}) * PP ({self.pp_size}) * TP ({self.tp_size})"
++
++        self.grid = torch.arange(self.world_size).view(dp_size, pp_size, tp_size)  # DP * PP * TP grid
++        # Find the position of the current process in the grid
++        self.dp_rank, self.pp_rank, self.tp_rank = (self.grid == self.global_rank).nonzero().flatten().tolist()
++
++        # Process group creation - Update indexing to match new grid order
++        self.tp_group = dist.new_subgroups_by_enumeration([self.grid[d, p, :].tolist() for d in range(dp_size) for p in range(pp_size)])[0]
++        self.pp_group = dist.new_subgroups_by_enumeration([self.grid[d, :, t].tolist() for d in range(dp_size) for t in range(tp_size)])[0]
++        self.dp_group = dist.new_subgroups_by_enumeration([self.grid[:, p, t].tolist() for p in range(pp_size) for t in range(tp_size)])[0]
++        self.pp_dp_group = dist.new_subgroups_by_enumeration([self.grid[:, :, t].flatten().tolist() for t in range(tp_size)])[0]
++
++        self.world_group = dist.group.WORLD
++        
++        # Update group IDs with new grid ordering
++        self.tp_group_ids = self.grid[self.dp_rank, self.pp_rank, :].tolist()
++        self.pp_group_ids = self.grid[self.dp_rank, :, self.tp_rank].tolist()
++        self.dp_group_ids = self.grid[:, self.pp_rank, self.tp_rank].tolist()
++               
++        # Tensor parallelism
++        self.tp_world_size = dist.get_world_size(group=self.tp_group)
++        self.tp_first_rank = self.tp_group_ids[0]
++        self.tp_last_rank = self.tp_group_ids[-1]
++
++        # Pipeline parallelism
++        self.pp_world_size = dist.get_world_size(group=self.pp_group)
++        self.pp_first_rank = self.pp_group_ids[0]
++        self.pp_last_rank = self.pp_group_ids[-1]
++        self.pp_is_first_stage = self.pp_rank == 0
++        self.pp_is_last_stage = self.pp_rank == self.pp_world_size - 1
++        self.pp_next_rank = None if self.pp_rank == self.pp_world_size - 1 else int(self.grid[self.dp_rank, self.pp_rank + 1, self.tp_rank].item())
++        self.pp_prev_rank = None if self.pp_rank == 0 else int(self.grid[self.dp_rank, self.pp_rank - 1, self.tp_rank].item())
++
++        # Data parallelism
++        self.dp_world_size = dist.get_world_size(group=self.dp_group)
++        self.dp_first_rank = self.dp_group_ids[0]
++        self.dp_last_rank = self.dp_group_ids[-1]
++        
++    def __str__(self):
++        return f"DP({self.dp_world_size})-PP({self.pp_world_size})-TP({self.tp_world_size})-Rank({self.global_rank})"
++
++def setup_process_group_manager(dp_size, pp_size, tp_size):
++    global process_group_manager
++    process_group_manager = ProcessGroupManager(dp_size, pp_size, tp_size)
+\ No newline at end of file
+diff -x '*.diff' --new-file -ur step1_modeling/train.py step2_process_group_manager/train.py
+--- step1_modeling/train.py	2024-11-17 15:46:52.000000000 +0000
++++ step2_process_group_manager/train.py	2024-11-17 15:43:28.000000000 +0000
+@@ -1,7 +1,8 @@
+ """
+-torchrun --nproc_per_node 1 train.py 
++torchrun --nproc_per_node 2 train.py --tp_size 2 --run_name process_group_manager --use_wandb
+ """
+ import os
++import wandb
+ import datetime
+ import torch
+ import torch.nn.functional as F
+@@ -11,6 +12,8 @@
+ from transformers import AutoConfig
+ 
+ from model import Llama
++import process_group_manager as pgm
++from process_group_manager import setup_process_group_manager
+ from utils import set_all_seed, print
+ 
+ if __name__ == "__main__":    
+@@ -31,6 +34,12 @@
+     parser.add_argument("--learning_rate", type=float, default=3e-4)
+     parser.add_argument("--seq_len", type=int, default=32)
+     parser.add_argument("--micro_batch_size", type=int, default=1)
++    
++    # Distributed training arguments
++    parser.add_argument("--tp_size", type=int, default=1, help="Tensor Parallel size")
++    parser.add_argument("--dp_size", type=int, default=1, help="Data Parallel size")
++    parser.add_argument("--pp_size", type=int, default=1, help="Pipeline Parallel size")
++    parser.add_argument("--pp_engine", type=str, default="afab", choices=["1f1b", "afab"])
+ 
+     # Logging arguments
+     parser.add_argument("--run_name", type=str, default="default_run")
+@@ -52,9 +61,25 @@
+     dtype = torch.bfloat16
+ 
+     dist.init_process_group(rank=global_rank, world_size=world_size, backend=backend, init_method=f"env://", timeout=datetime.timedelta(minutes=2))
++    setup_process_group_manager(dp_size=args.dp_size, pp_size=args.pp_size, tp_size=args.tp_size)
+ 
++    is_wandb_rank = pgm.process_group_manager.tp_rank == 0 and pgm.process_group_manager.dp_rank == 0 and pgm.process_group_manager.pp_is_last_stage
+     set_all_seed(args.seed)
+ 
++    if is_wandb_rank and args.use_wandb:
++        wandb.init(
++            project="picotron_tutorial",
++            name=f"{args.run_name}_{pgm.process_group_manager}",
++            config={
++                "tensor_parallel_size": pgm.process_group_manager.tp_world_size,
++                "pipeline_parallel_size": pgm.process_group_manager.pp_world_size,
++                "data_parallel_size": pgm.process_group_manager.dp_world_size,
++                "model": args.model_name,
++                "learning_rate": args.learning_rate,
++                "seed": args.seed,
++            },
++        )
++
+     model_config = AutoConfig.from_pretrained(args.model_name)
+     model_config.num_hidden_layers = args.num_hidden_layers
+     model_config.num_attention_heads = args.num_attention_heads
+@@ -92,6 +117,12 @@
+     # Optimizer step
+     optimizer.step()
+ 
+-    print(f"Loss: {loss.item():.4f}", is_print_rank=(global_rank == 0))
++    print(f"[rank {pgm.process_group_manager.global_rank}], Loss: {loss:.4f}")
++       
++    if is_wandb_rank and args.use_wandb:
++        wandb.log({"loss": loss.item()})
++
++    if is_wandb_rank and args.use_wandb:
++        wandb.finish()
+ 
+     dist.destroy_process_group()
+\ No newline at end of file
