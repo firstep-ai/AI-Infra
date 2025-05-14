@@ -1,0 +1,45 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "vLLM Serve Qwen",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vllm.entrypoints.openai.api_server",
+            "args": [
+                "--model",
+                "Qwen/Qwen2.5-Coder-7B-Instruct",
+                "--download-dir",
+                "/workspace/vllm/models",
+                "--tool-call-parser",
+                "hermes",
+                "--enable-auto-tool-choice"
+            ],
+            "justMyCode": false
+        }
+    ]
+}
+
+// {
+//     "version": "0.2.0",
+//     "configurations": [
+//         {
+//             "name": "vLLM Serve Qwen",
+//             "type": "debugpy",
+//             "request": "launch",
+//             "module": "vllm.entrypoints.openai.api_server",
+//             "args": [
+//                 "--model",
+//                 "Qwen/Qwen2.5-Coder-32B-Instruct-GPTQ-Int4",
+//                 "--quantization",
+//                 "gptq",
+//                 "--download-dir",
+//                 "/workspace/vllm/models",
+//                 "--tool-call-parser",
+//                 "hermes",
+//                 "--enable-auto-tool-choice"
+//             ],
+//             "justMyCode": false
+//         }
+//     ]
+// }
