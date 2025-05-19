@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "vLLM Serve Qwen",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vllm.entrypoints.openai.api_server",
+            "python": "${workspaceFolder}/vllm_venv_070/bin/python",
+            "args": [
+                "--model",
+                "facebook/opt-125m",
+                "--device",
+                "cpu"
+            ],
+            "justMyCode": false
+        }
+    ]
+}
