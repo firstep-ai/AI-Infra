@@ -13,7 +13,11 @@
                 "--device",
                 "cpu"
             ],
-            "justMyCode": false
+            "justMyCode": false,
+            "env": {
+                "VLLM_TARGET_DEVICE":"cpu",
+                "VLLM_USE_V1":"0"
+            }
         }
     ]
 }
