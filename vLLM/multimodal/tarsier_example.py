@@ -92,7 +92,7 @@ print("\n--- 文本和图像测试 ---")
 # "The format of the model input is `Human: <image>\n{image_input} {text_input} Assistant: {response}`.
 #  `<image>` is a placeholder for the image token."
 #  tokenizer_config.json 中 "<image>" 标记为 id 32000
-image_question = "这张图片里有什么内容？"
+image_question = "Please describe the image"
 image_prompt = f"Human: <image>\n{image_question} Assistant:"
 
 try:

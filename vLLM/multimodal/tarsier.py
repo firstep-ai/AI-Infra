@@ -57,17 +57,12 @@ class TarsierImagePixelInputs(TypedDict):
     pixel_values: torch.Tensor
 
 
-class PixtralHFImagePixelInputs(TypedDict): # Reusing from LLaVA
-    type: Literal["pixel_values_pixtral"]
-    pixel_values: Union[torch.Tensor, list[torch.Tensor]]
-
-
 class TarsierImageEmbeddingInputs(TypedDict):
     type: Literal["image_embeds"]
     data: torch.Tensor
 
 
-TarsierImageInputs = Union[TarsierImagePixelInputs, PixtralHFImagePixelInputs,
+TarsierImageInputs = Union[TarsierImagePixelInputs, 
                            TarsierImageEmbeddingInputs]
 
 
@@ -667,7 +662,7 @@ class TarsierForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP)
 
     def _process_image_pixels(
         self,
-        inputs: Union[TarsierImagePixelInputs, PixtralHFImagePixelInputs],
+        inputs: TarsierImagePixelInputs,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
         assert self.vision_tower is not None
         pixel_values = inputs["pixel_values"]
@@ -681,11 +676,6 @@ class TarsierForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP)
             # 3. Apply Tarsier's split token logic
             final_features = self._add_tarsier_split_tokens(projected_features)
             return final_features
-        elif isinstance(image_features_selected, tuple): # e.g. Pixtral with list of images
-            projected_list = [self.multi_modal_projector(feat) for feat in image_features_selected]
-            # Apply split tokens to each tensor in the list
-            final_list = [self._add_tarsier_split_tokens(proj_feat) for proj_feat in projected_list]
-            return tuple(final_list)
         else:
             raise TypeError(f"Unexpected type from _image_pixels_to_features: {type(image_features_selected)}")
 
