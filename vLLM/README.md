@@ -6,7 +6,7 @@ VLLM_USE_PRECOMPILED=1 pip install --editable .
 
 # pre-commit 检测
 
-pip install pre-commit==4.0.1 pytest tensorizer>=2.9.0 pytest-forked pytest-asyncio pytest-rerunfailures pytest-shard pytest-timeoutn
+pip install pre-commit==4.0.1 pytest tensorizer>=2.9.0 pytest-forked pytest-asyncio pytest-rerunfailures pytest-shard pytest-timeout
 pre-commit install
 pre-commit run --files vllm/transformers_utils/config.py
 pytest models/multimodal/processing/test_common.py -k "test_processing_correctness[1.0-32-0.3-omni-research/Tarsier-7b]"
