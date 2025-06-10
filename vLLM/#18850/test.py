@@ -1,11 +1,13 @@
 from vllm import LLM, SamplingParams
 from PIL import Image
+import os
 
+os.environ["VLLM_USE_V1"] = "0"
 if __name__ == "__main__":
     EXAMPLE_IMAGE_PATH = "para_1.jpg"
     llm = LLM(
         model="ByteDance/Dolphin",
-        hf_overrides={"architectures": ["DonutModel"]}
+        hf_overrides={"architectures": ["DonutForConditionalGeneration"]},
     )
     sampling_params = SamplingParams(temperature=0.1, top_p=0.9, max_tokens=500)
 
