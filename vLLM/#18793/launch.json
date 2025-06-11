@@ -1,0 +1,66 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug: Text-to-Text (写诗)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task", "txt2txt",
+                "--prompt", "Help me write a poem about the beauty of nature",
+                "--model_path", "models/BAGEL-7B-MoT"
+            ],
+            "justMyCode": true
+        },
+        {
+            "name": "Debug: Image Edit (换蓝裙)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task", "edit",
+                "--prompt", "Change her clothes to a blue dress",
+                "--input_image", "test_images/women.jpg",
+                "--output_path", "women_in_blue_dress.png",
+                "--model_path", "models/BAGEL-7B-MoT",
+                "--mode", "1",
+                "--seed", "456"
+            ],
+            "justMyCode": true
+        },
+        {
+            "name": "Debug: Text-to-Image (柯基)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task", "txt2img",
+                "--prompt", "A cute corgi wearing sunglasses, sitting on a beach, cinematic lighting",
+                "--output_path", "corgi_on_beach.png",
+                "--model_path", "models/BAGEL-7B-MoT",
+                "--mode", "1",
+                "--seed", "123"
+            ],
+            "justMyCode": true
+        },
+        {
+            "name": "Debug: Image-to-Text (Meme)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/inference.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--task", "img2txt",
+                "--prompt", "Can someone explain what's funny about this meme??",
+                "--input_image", "test_images/meme.jpg",
+                "--model_path", "models/BAGEL-7B-MoT",
+                "--mode", "1"
+            ],
+            "justMyCode": true
+        }
+    ]
+}

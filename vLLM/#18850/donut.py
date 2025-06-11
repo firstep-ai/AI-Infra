@@ -1156,12 +1156,24 @@ class DonutDecoderWrapper(nn.Module):
                         cache_config=cache_config,
                         quant_config=quant_config,
                         prefix=prefix)
+
+    def forward(self, *args, **kwargs):
+        return self.decoder(*args, **kwargs)
+
+class DonutDecoderForCausalLM(nn.Module):
+    def __init__(self, config, cache_config=None, quant_config=None, prefix: str = ""):
+        super().__init__()
+        self.config = config
+        self.model = DonutDecoderWrapper(config=config,
+                        cache_config=cache_config,
+                        quant_config=quant_config,
+                        prefix=prefix)
         
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
     def forward(self, *args, **kwargs):
-        normalized_states = self.decoder(*args, **kwargs)
-        logits = self.layer_norm(normalized_states)
+        normalized_states = self.model(*args, **kwargs)
+        logits = self.lm_head(normalized_states)
         
         return logits
     
@@ -1178,8 +1190,6 @@ class DonutDecoderWrapper(nn.Module):
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
-                if name.startswith("model.decoder."):
-                    name = name.replace("model.decoder.", "decoder.")
                 if weight_name not in name:
                     continue
                 name = name.replace(weight_name, param_name)
@@ -1404,7 +1414,7 @@ class DonutDummyInputsBuilder(
     ) -> MultiModalDataDict:
         num_images = mm_counts.get("image", 0)
 
-        target_width = target_height = self.info.get_hf_config().projection_dim
+        target_width, target_height = self.info.get_hf_config().encoder.image_size
 
         return {
             "image":
@@ -1463,7 +1473,6 @@ class DonutMultiModalProcessor(
         else:
             hf_processor = self.info.get_hf_processor()
             tokenizer = hf_processor.tokenizer
-            prompt = hf_processor._construct_prompts([prompt])[0]
             processed_outputs = tokenizer(prompt,
                                           add_special_tokens=True,
                                           return_tensors="pt")
@@ -1517,7 +1526,7 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
             'only Swin is supported for now')
         self.encoder = DonutSwinModel(config=config.encoder, prefix=f"{prefix}.encoder")
         # self._build_image_projection_layers(config)
-        self.decoder = DonutDecoderWrapper(config=config.decoder,
+        self.decoder = DonutDecoderForCausalLM(config=config.decoder,
                                    cache_config=cache_config,
                                    quant_config=quant_config,
                                    prefix=f"{prefix}.decoder")
