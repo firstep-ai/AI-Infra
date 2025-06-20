@@ -38,3 +38,7 @@ if __name__ == "__main__":
     outputs = llm.generate(vllm_inputs_single_image, sampling_params) # 直接生成
     for output_item in outputs:
         print(f"生成: {output_item.outputs[0].text}\n" + "-" * 20)
+
+# python examples/offline_inference/vision_language.py -m tarsier2 --modality image
+# python examples/offline_inference/vision_language.py -m tarsier2 --modality video
+# python examples/offline_inference/vision_language_multi_image.py -m tarsier2
