@@ -10,5 +10,5 @@ pip install pre-commit==4.0.1
 pre-commit install
 pre-commit run --files vllm/transformers_utils/config.py
 
-pip install -r requirements/test.txt
-pytest tests/models/multimodal/processing/test_common.py -k "omni-research/Tarsier2-Recap-7b"
+pip install pytest tensorizer>=2.9.0 pytest-forked pytest-asyncio pytest-rerunfailures pytest-shard pytest-timeout
+pytest -v -s tests/models/multimodal/processing/test_common.py -k "omni-research/Tarsier2-Recap-7b"
