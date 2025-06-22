@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "vLLM Serve Qwen",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vllm.entrypoints.openai.api_server",
+            "args": [
+                "--model",
+                "microsoft/Phi-4-mini-reasoning",
+                "--enable-reasoning",
+                "--reasoning-parser",
+                "deepseek_r1"
+            ],
+            "justMyCode": false,
+        }
+    ]
+}
