@@ -73,3 +73,6 @@ How would you describe the daily teamwork and new ideas culture in Rakuten's AI 
 # What kind of team atmosphere do you prefer?
 
 I want to work in a team that is positive, open, tech-focused, and supportive. I like it when team members can share technical ideas freely and solve hard AI Infra problems together. I also value a team that likes new ideas and learning, and where everyone helps each other grow. My experience working on the open-source vLLM project made me enjoy this kind of team very much.
+
+# What kind of work environment and colleagues do you prefer?
+I thrive in a work environment that is collaborative, innovative, and results-driven. My background in open-source projects like vLLM has taught me the value of teamwork and a shared passion for solving complex technical challenges. I appreciate a culture that encourages continuous learning and improvement.
