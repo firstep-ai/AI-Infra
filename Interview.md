@@ -22,7 +22,9 @@ Based on my experience in AI Infra, especially with LLM inference and optimizati
 
  I was a key person in the vLLM project. I led the full integration of ByteDance's Tarsier and Tarsier2 multi-modal model, including support for Tensor Parallelism and Pipeline Parallelism. I also fixed important issues to make vLLM more stable, like supporting long contexts for Mistral models and image/video tasks for Qwen2-VL models.
 
- # What achievements have you made in your previous role?
+ In my current company, I led the full process from fine-tuning models to deploying them with vLLM. I also made a new Cache-Augmented Generation (CAG)-based KV-cache system that made inference much faster and more efficient. I also build knowledge bases and core parts for an AI assistant to make it accurate and efficient.
+
+# What achievements have you made in your previous role?
 
 My main achievements include:
 For the Yonyou Translation Tool, my models performed better than GPT-4o in tests. My CAG-based KV-cache system made inference much faster and more efficient.
@@ -57,7 +59,7 @@ I know a lot about Rakuten. Rakuten is a big global tech company with many busin
 
 # Why do you think you are a good fit for this position?
 
-I think I am a very good fit for Rakuten's AI Infra Engineer job for three main reasons:
+I think I am a very good fit for Rakuten's AI Infra Engineer job for several reasons:
 First, I have direct and deep experience in making LLM inference faster and building high-performance AI Infra. My work on vLLM shows I can optimize and integrate complex AI models for quick deployment.
 
 Second, I have strong knowledge and practice in distributed computing (TP, PP, DP, ZeRO). This is very important for building and keeping big AI infrastructure. My experience in the "AI Sabah" project, where I fixed hardware limits, also shows I can solve problems.
@@ -65,8 +67,6 @@ Second, I have strong knowledge and practice in distributed computing (TP, PP, D
 # Do you have any questions for me?
 
 Yes, I have some questions:
-
-For Rakuten's AI Infra team, what are the top technical challenges in LLM inference optimization or multi-modal model deployment in the next 1-2 years?
 What kind of training and career path does Rakuten offer for new AI Infra engineers?
 How would you describe the daily teamwork and new ideas culture in Rakuten's AI Infra team?
 
