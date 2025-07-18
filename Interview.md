@@ -9,7 +9,11 @@ I chose AI Infra and this job because I am very interested in building and makin
 # What are your strengths and weaknesses?
 
 My Strengths
-My biggest strength is that I'm an AI Infra tool developer, not just a user. This means I can deeply optimize AI systems from their core code, unlike others who mostly just use tools like vLLM (which I helped build!). Also, my long time in open source means I know and can directly contact many of the world's top AI scientists and engineers. If Rakuten faces a big tech problem, I can use wechat directly ask the DeepSeek AI Infra Leader because I have his personal contact.
+My biggest strength is that I'm an AI Infra tool developer, not just a user. This means I can deeply optimize AI systems from their core code, unlike others who mostly just use tools like vLLM (which I helped build!). 
+
+Also, my long time in open source means I know and can directly contact many of the world's top AI scientists and engineers. If Rakuten faces a big tech problem, I can use wechat directly ask the DeepSeek AI Infra Leader because I have his personal contact.
+
+The previous interviewer have asked me a lot question about MoE architecture model, I believe is because Rakuten are facing this area's problem to training and inference, As you can see, I answered very well. But my research area is mainly on multimodal LLM, which means you can input multimodal data and output multimodal data. you can see a lot of comany and OpenAI and Google they release their multimodal model to support user edit their image and talk with AI realtime, there is no doubt that this kind of LLM have big busness value and I believe it well help Rakuten business more efficient and let your users have a greater experience. I can confident say I am one of the best multimodal LLM expert
 
 My Weaknesses
 Sometimes, I get too focused on small technical details. I'm fixing this by joining more project planning and talking more with other teams, to make sure my work always helps the bigger business goals.
@@ -75,4 +79,5 @@ How would you describe the daily teamwork and new ideas culture in Rakuten's AI 
 I want to work in a team that is positive, open, tech-focused, and supportive. I like it when team members can share technical ideas freely and solve hard AI Infra problems together. I also value a team that likes new ideas and learning, and where everyone helps each other grow. My experience working on the open-source vLLM project made me enjoy this kind of team very much.
 
 # What kind of work environment and colleagues do you prefer?
+
 I thrive in a work environment that is collaborative, innovative, and results-driven. My background in open-source projects like vLLM has taught me the value of teamwork and a shared passion for solving complex technical challenges. I appreciate a culture that encourages continuous learning and improvement.
