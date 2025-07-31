@@ -10,7 +10,7 @@
             "args": [
                 "--task", "txt2txt",
                 "--prompt", "Help me write a poem about the beauty of nature",
-                "--model_path", "models/BAGEL-7B-MoT"
+                "--model_path", "/workspace/BAGEL-7B-MoT"
             ],
             "justMyCode": true
         },
@@ -25,7 +25,7 @@
                 "--prompt", "Change her clothes to a blue dress",
                 "--input_image", "test_images/women.jpg",
                 "--output_path", "women_in_blue_dress.png",
-                "--model_path", "models/BAGEL-7B-MoT",
+                "--model_path", "/workspace/BAGEL-7B-MoT",
                 "--mode", "1",
                 "--seed", "456"
             ],
@@ -41,7 +41,7 @@
                 "--task", "txt2img",
                 "--prompt", "A cute corgi wearing sunglasses, sitting on a beach, cinematic lighting",
                 "--output_path", "corgi_on_beach.png",
-                "--model_path", "models/BAGEL-7B-MoT",
+                "--model_path", "/workspace/BAGEL-7B-MoT",
                 "--mode", "1",
                 "--seed", "123"
             ],
@@ -57,7 +57,7 @@
                 "--task", "img2txt",
                 "--prompt", "Can someone explain what's funny about this meme??",
                 "--input_image", "test_images/meme.jpg",
-                "--model_path", "models/BAGEL-7B-MoT",
+                "--model_path", "/workspace/BAGEL-7B-MoT",
                 "--mode", "1"
             ],
             "justMyCode": true
