@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+        "name": "VLLM: Debug Vision Language Inference",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/examples/offline_inference/vision_language.py",
+        "args": [
+            "--model-type",
+            "gemma3",
+            "--num-prompts",
+            "1"
+        ],
+        "env": {
+            "VLLM_USE_V1": "0"
+        },
+        "console": "integratedTerminal",
+        "justMyCode": true
+        }
+    ]
+}
