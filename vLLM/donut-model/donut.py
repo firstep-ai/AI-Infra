@@ -1208,181 +1208,6 @@ class DonutDecoderForCausalLM(nn.Module):
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
-    
-# Language backbone and processor implementation
-# class DonutForConditionalGeneration(nn.Module):
-
-#     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-#         super().__init__()
-
-#         config = vllm_config.model_config.hf_config
-#         cache_config = vllm_config.cache_config
-#         quant_config = vllm_config.quant_config
-
-#         self.config = config
-
-#         # self.vocab_size = config.vocab_size
-
-#         # self.shared = BartScaledWordEmbedding(self.vocab_size, config.d_model)
-#         self.encoder = DonutSwinModel(config=config.encoder, prefix=f"{prefix}.encoder")
-#         self.decoder = DonutDecoderWrapper(config=config.decoder,
-#                                    cache_config=cache_config,
-#                                    quant_config=quant_config,
-#                                    prefix=f"{prefix}.decoder")
-
-#         # if self.config.tie_word_embeddings:
-#         #     self.encoder.embed_tokens.weight = self.shared.weight
-#         #     self.decoder.embed_tokens.weight = self.shared.weight
-
-#     def forward(
-#         self,
-#         input_ids: torch.Tensor,
-#         positions: torch.Tensor,
-#         encoder_input_ids: torch.Tensor,
-#         encoder_positions: torch.Tensor,
-#         inputs_embeds: Optional[torch.Tensor] = None,
-#     ) -> torch.Tensor:
-#         r"""
-#         Args:
-#             input_ids
-#                 Indices of *decoder* input sequence tokens in the vocabulary.
-#                 Padding will be ignored by default should you
-#                 provide it.
-#             positions
-#                 Positions of *decoder* input sequence tokens.
-#             encoder_input_ids
-#                 Indices of *encoder* input sequence tokens in the vocabulary.
-#             encoder_positions:
-#                 Positions of *encoder* input sequence tokens.
-#         Returns:
-#             Model output torch.Tensor
-#         """
-
-#         encoder_hidden_states = None
-
-#         if inputs_embeds is not None or encoder_input_ids.numel() > 0:
-#             # Run encoder attention if a non-zero number of encoder tokens
-#             # are provided as input
-#             encoder_hidden_states = self.encoder(input_ids=encoder_input_ids,
-#                                                  positions=encoder_positions,
-#                                                  inputs_embeds=inputs_embeds)
-
-#         # decoder outputs consists of
-#         # (dec_features, past_key_value, dec_hidden, dec_attn)
-#         decoder_outputs = self.decoder(
-#             decoder_input_ids=input_ids,
-#             decoder_positions=positions,
-#             encoder_hidden_states=encoder_hidden_states)
-
-#         return decoder_outputs
-
-#     def compute_logits(
-#         self,
-#         hidden_states: torch.Tensor,
-#         sampling_metadata: SamplingMetadata,
-#     ) -> Optional[torch.Tensor]:
-#         return self.decoder.compute_logits(hidden_states,
-#                                                   sampling_metadata)
-
-#     def load_weights(self, weights: Iterable[tuple[str,
-#                                                    torch.Tensor]]) -> set[str]:
-#         loader = AutoWeightsLoader(self)
-#         return loader.load_weights(weights)
-
-
-# class DonutLanguageForConditionalGeneration(nn.Module, SupportsV0Only):
-
-#     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
-#         super().__init__()
-
-#         config = vllm_config.model_config.hf_config
-
-#         self.config = config
-#         self.model = DonutLanguageModel(vllm_config=vllm_config,
-#                                             prefix=f"{prefix}.model")
-#         embed_scale = math.sqrt(
-#             config.d_model) if config.scale_embedding else 1.0
-
-#         self.vocab_size = config.vocab_size
-#         self.lm_head = BartParallelLMHead(self.vocab_size,
-#                                           config.d_model,
-#                                           embed_scale=embed_scale)
-
-#         self.logits_processor = LogitsProcessor(self.vocab_size,
-#                                                 config.vocab_size)
-
-#     def forward(
-#         self,
-#         input_ids: torch.Tensor,
-#         positions: torch.Tensor,
-#         encoder_input_ids: torch.Tensor,
-#         encoder_positions: torch.Tensor,
-#         inputs_embeds: Optional[torch.Tensor] = None,
-#         **kwargs,
-#     ) -> torch.Tensor:
-#         r"""
-#         Args:
-#             input_ids
-#                 torch.Tensor of *decoder* input token ids.
-#             positions
-#                 torch.Tensor of *decoder* position indices.
-#             encoder_input_ids
-#                 torch.Tensor of *encoder* input token ids.
-#             encoder_positions
-#                 torch.Tensor of *encoder* position indices
-#         Returns:
-#             Output torch.Tensor
-#         """
-
-#         return self.model(input_ids,
-#                           positions,
-#                           encoder_input_ids,
-#                           encoder_positions,
-#                           inputs_embeds=inputs_embeds)
-
-#     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-#         return self.model.encoder.embed_tokens(input_ids)
-
-#     def compute_logits(
-#         self,
-#         hidden_states: torch.Tensor,
-#         sampling_metadata: SamplingMetadata,
-#     ) -> Optional[torch.Tensor]:
-#         logits = self.logits_processor(self.lm_head, hidden_states,
-#                                        sampling_metadata)
-#         return logits
-
-#     def load_weights(self, weights: Iterable[tuple[str,
-#                                                    torch.Tensor]]) -> set[str]:
-#         stacked_params_mapping = [
-#             # (param_name, shard_name, shard_id)
-#             ("qkv_proj", "q_proj", "q"),
-#             ("qkv_proj", "k_proj", "k"),
-#             ("qkv_proj", "v_proj", "v"),
-#         ]
-
-#         params_dict = dict(self.named_parameters())
-#         loaded_params: set[str] = set()
-#         for name, loaded_weight in weights:
-#             for (param_name, weight_name, shard_id) in stacked_params_mapping:
-#                 if weight_name not in name:
-#                     continue
-#                 name = name.replace(weight_name, param_name)
-#                 param = params_dict[name]
-#                 weight_loader = param.weight_loader
-#                 weight_loader(param, loaded_weight, shard_id)
-#                 break
-#             else:
-#                 if "final_logits_bias" in name:
-#                     continue
-#                 if self.config.tie_word_embeddings and "embed_tokens" in name:
-#                     continue
-#                 param = params_dict[name]
-#                 weight_loader = getattr(param, "weight_loader",
-#                                         default_weight_loader)
-#                 weight_loader(param, loaded_weight)
-#             loaded_params.add(name)
-#         return loaded_params
 
 
 class DonutProcessingInfo(BaseProcessingInfo):
@@ -1397,8 +1222,25 @@ class DonutProcessingInfo(BaseProcessingInfo):
         return {"image": 1}
 
     def get_num_image_tokens(self) -> int:
-        processor_config = self.ctx.get_hf_image_processor_config()
-        return processor_config["image_seq_length"]
+        """
+        Calculates the number of image tokens (patches) from the
+        encoder's configuration.
+        """
+        # 1. 获取模型的主配置，而不是图像处理器配置
+        model_config = self.get_hf_config()
+
+        # 2. 从主配置中获取编码器（Swin Transformer）的特定配置
+        encoder_config = model_config.encoder
+
+        # 3. 从编码器配置中提取图像尺寸和patch尺寸
+        image_height, image_width = encoder_config.image_size
+        patch_size = encoder_config.patch_size
+
+        # 4. 计算patch的数量，即图像token的数量
+        # 使用整数除法 // 确保结果是整数
+        num_patches = (image_height // patch_size) * (image_width // patch_size)
+
+        return num_patches
 
 
 class DonutDummyInputsBuilder(
@@ -1428,12 +1270,13 @@ class DonutMultiModalProcessor(
         EncDecMultiModalProcessor[DonutProcessingInfo]):
 
     def _hf_processor_applies_updates(
-        self,
-        prompt_text: str,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-    ) -> bool:
-        return False
+            self,
+            prompt_text: str,
+            mm_items: MultiModalDataItems,
+            hf_processor_mm_kwargs: Mapping[str, object],
+            tokenization_kwargs: Mapping[str, object],  # <--- 在这里添加缺失的参数
+        ) -> bool:
+            return False
 
     def create_encoder_prompt(
         self,
@@ -1462,21 +1305,27 @@ class DonutMultiModalProcessor(
         return prompt_tokens
 
     def _call_hf_processor(
-        self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object],
-    ) -> BatchFeature:
-        if mm_data:
-            processed_outputs = super()._call_hf_processor(
-                prompt, mm_data, mm_kwargs)
-        else:
+            self,
+            prompt: str,
+            mm_data: Mapping[str, object],
+            mm_kwargs: Mapping[str, object],
+            tok_kwargs: Mapping[str, object],
+        ) -> BatchFeature:
             hf_processor = self.info.get_hf_processor()
-            tokenizer = hf_processor.tokenizer
-            processed_outputs = tokenizer(prompt,
-                                          add_special_tokens=True,
-                                          return_tensors="pt")
-        return processed_outputs
+            if mm_data:
+                processed_outputs = hf_processor(
+                    images=mm_data.get("images"),
+                    return_tensors="pt"
+                )
+                if "input_ids" not in processed_outputs:
+                    processed_outputs["input_ids"] = torch.tensor([[]])
+
+            else:
+                tokenizer = hf_processor.tokenizer
+                final_tok_kwargs = dict(return_tensors="pt", **tok_kwargs)
+                processed_outputs = tokenizer(prompt, **final_tok_kwargs)
+
+            return processed_outputs
 
     def _get_mm_fields_config(
         self,
@@ -1531,35 +1380,6 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
                                    quant_config=quant_config,
                                    prefix=f"{prefix}.decoder")
         self.pad_token_id = config.pad_token_id
-
-    # def _build_image_projection_layers(self, config: PretrainedConfig):
-    #     image_dim_out = config.encoder_config.dim_embed[-1]
-    #     dim_projection = config.encoder_config.projection_dim
-    #     self.image_projection = nn.Parameter(
-    #         torch.empty(image_dim_out, dim_projection))
-    #     self.image_proj_norm = nn.LayerNorm(dim_projection)
-    #     image_pos_embed_config = config.encoder.image_pos_embed
-    #     if image_pos_embed_config['type'] == 'learned_abs_2d':
-    #         self.image_pos_embed = LearnedAbsolutePositionEmbedding2D(
-    #             embedding_dim=image_dim_out,
-    #             num_pos=image_pos_embed_config['max_pos_embeddings'])
-    #     else:
-    #         raise NotImplementedError("Donut only supports learned_abs_2d "
-    #                                   "as image position embedding.")
-
-    #     self.image_feature_source = config.encoder.image_feature_source
-
-    #     # temporal embedding
-    #     visual_temporal_embedding_config = (
-    #         self.encoder_config.visual_temporal_embedding)
-    #     if visual_temporal_embedding_config['type'] == 'COSINE':
-    #         self.visual_temporal_embed = PositionalEmbeddingCosine1D(
-    #             embed_dim=image_dim_out,
-    #             max_seq_len=visual_temporal_embedding_config[
-    #                 'max_temporal_embeddings'])
-    #     else:
-    #         raise NotImplementedError(
-    #             'Donut only supports COSINE as temporal embedding.')
 
     def _validate_pixel_values(
         self, data: Union[torch.Tensor, list[torch.Tensor]]
