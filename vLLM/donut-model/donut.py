@@ -1,243 +1,585 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
-import math
-from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Literal, Optional, TypedDict, Union, Set
+import logging
+from typing import Callable, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from einops import rearrange
-from transformers import BartTokenizer, BatchFeature, PretrainedConfig
+from timm.layers import DropPath, to_2tuple, to_ntuple, trunc_normal_, _assert
+from timm.layers.format import Format
+from vllm.config import VllmConfig
 
+import collections.abc
+from typing import Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.utils.checkpoint
+from transformers.activations import ACT2FN
+from transformers.pytorch_utils import find_pruneable_heads_and_indices, meshgrid, prune_linear_layer
+from transformers.utils import torch_int
+
+import math
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Literal, TypedDict, Union
+from typing import Optional
+
+import torch
+import torch.nn as nn
+import torch.utils.checkpoint
+from transformers import BatchFeature, NougatProcessor
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.models.bart import (BartDecoder, BartEncoder,
-                                             BartParallelLMHead,
-                                             BartScaledWordEmbedding)
+from vllm.model_executor.models.bart import (BartParallelLMHead)
+from vllm.model_executor.models.interfaces import (MultiModalEmbeddings, SupportsMultiModal,
+                                                   SupportsV0Only)
+from vllm.model_executor.models.utils import AutoWeightsLoader, flatten_bn, _flatten_embeddings
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (MultiModalDataDict, MultiModalFieldConfig,
                                     MultiModalKwargs)
 from vllm.multimodal.parse import MultiModalDataItems
-from vllm.multimodal.processing import (BaseProcessingInfo,
-                                        EncDecMultiModalProcessor,
-                                        PromptIndexTargets, PromptInsertion,
-                                        PromptUpdate)
+from vllm.multimodal.processing import (BaseProcessingInfo, EncDecMultiModalProcessor,
+                                        PromptIndexTargets, PromptInsertion, PromptUpdate)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
-from vllm.sequence import IntermediateTensors
-
-from .interfaces import (MultiModalEmbeddings, SupportsMultiModal,
-                         SupportsV0Only)
-from .utils import AutoWeightsLoader, flatten_bn, merge_multimodal_embeddings
-
-import math
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Literal, Optional, TypedDict, Union
-
-import torch
-import torch.nn as nn
-
-from vllm.config import VllmConfig
-from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.inputs import (MultiModalDataDict,
-                                    MultiModalKwargs)
-from vllm.multimodal.parse import MultiModalDataItems
-from vllm.multimodal.processing import (BaseProcessingInfo,
-                                        EncDecMultiModalProcessor,
-                                        PromptUpdate)
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
-from vllm.sequence import IntermediateTensors
-
-from .interfaces import (MultiModalEmbeddings, SupportsMultiModal,
-                         SupportsV0Only)
-from .utils import AutoWeightsLoader, flatten_bn
-from torch import meshgrid
-
-from transformers.utils import torch_int, ModelOutput
-from typing import Optional, Tuple, Union
-import collections.abc
-from transformers.pytorch_utils import find_pruneable_heads_and_indices, meshgrid, prune_linear_layer
-import math
-from transformers.activations import ACT2FN
-from dataclasses import dataclass
+from vllm_mbart.mbart import MBartDecoderWrapper
 
 
-class DonutImagePixelInputs(TypedDict):
-    type: Literal["pixel_values"]
-    data: torch.Tensor
-    """Shape: (batch_size, num_channel, height, width)"""
-
-
-# ViT implementation are all copied from
-# https://huggingface.co/microsoft/Florence-2-base/blob/main/modeling_florence2.py
-class LearnedAbsolutePositionEmbedding2D(nn.Module):
+def window_partition(x, window_size: int):
     """
-    This module learns positional embeddings up to a fixed maximum size.
-    """
-
-    def __init__(self, embedding_dim=256, num_pos=50):
-        super().__init__()
-        self.row_embeddings = nn.Embedding(num_pos, embedding_dim // 2)
-        self.column_embeddings = nn.Embedding(
-            num_pos, embedding_dim - (embedding_dim // 2))
-
-    def forward(self, pixel_values):
-        """
-        pixel_values: (batch_size, height, width, num_channels) 
-        returns: (batch_size, height, width, embedding_dim * 2)
-        """
-        if len(pixel_values.shape) != 4:
-            raise ValueError('pixel_values must be a 4D tensor')
-        height, width = pixel_values.shape[1:3]
-        width_values = torch.arange(width, device=pixel_values.device)
-        height_values = torch.arange(height, device=pixel_values.device)
-        x_emb = self.column_embeddings(width_values)
-        y_emb = self.row_embeddings(height_values)
-        # (height, width, embedding_dim * 2)
-        pos = torch.cat([
-            x_emb.unsqueeze(0).repeat(height, 1, 1),
-            y_emb.unsqueeze(1).repeat(1, width, 1)
-        ],
-                        dim=-1)
-        # (embedding_dim * 2, height, width)
-        pos = pos.permute(2, 0, 1)
-        pos = pos.unsqueeze(0)
-        # (batch_size, embedding_dim * 2, height, width)
-        pos = pos.repeat(pixel_values.shape[0], 1, 1, 1)
-        # (batch_size, height, width, embedding_dim * 2)
-        pos = pos.permute(0, 2, 3, 1)
-        return pos
-
-
-class PositionalEmbeddingCosine1D(nn.Module):
-    """
-    This class implements a very simple positional encoding. It follows closely
-    the encoder from the link below:
-    https://pytorch.org/tutorials/beginner/translation_transformer.html
     Args:
-        embed_dim: The dimension of the embeddings.
-        dropout_prob: The dropout probability.
-        max_seq_len: The maximum length to precompute the positional encodings.
+        x: (B, H, W, C)
+        window_size (int): window size
+
+    Returns:
+        windows: (num_windows*B, window_size, window_size, C)
+    """
+    B, H, W, C = x.shape
+    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+    return windows
+
+
+# https://github.com/huggingface/transformers/issues/17476
+def window_reverse(windows, window_size: int, H: int, W: int):
+    """
+    Args:
+        windows: (num_windows*B, window_size, window_size, C)
+        window_size (int): Window size
+        H (int): Height of image
+        W (int): Width of image
+
+    Returns:
+        x: (B, H, W, C)
+    """
+    channels = int(windows.shape[-1])
+    windows = windows.view(-1, H // window_size, W // window_size, window_size, window_size, channels)
+    windows = windows.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, H, W, channels)
+    return windows
+
+
+def get_relative_position_index(win_h, win_w):
+    # get pair-wise relative position index for each token inside the window
+    coords = torch.stack(torch.meshgrid([torch.arange(win_h), torch.arange(win_w)]))  # 2, Wh, Ww
+    coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
+    relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
+    relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
+    relative_coords[:, :, 0] += win_h - 1  # shift to start from 0
+    relative_coords[:, :, 1] += win_w - 1
+    relative_coords[:, :, 0] *= 2 * win_w - 1
+    return relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+
+
+class WindowAttention(nn.Module):
+    r""" Window based multi-head self attention (W-MSA) module with relative position bias.
+    It supports both of shifted and non-shifted window.
+
+    Args:
+        dim (int): Number of input channels.
+        num_heads (int): Number of attention heads.
+        head_dim (int): Number of channels per head (dim // num_heads if not set)
+        window_size (tuple[int]): The height and width of the window.
+        qkv_bias (bool, optional):  If True, add a learnable bias to query, key, value. Default: True
+        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.0
+        proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
 
-    def __init__(self, embed_dim: int = 512, max_seq_len: int = 1024) -> None:
+    def __init__(self, dim, num_heads, head_dim=None, window_size=7, qkv_bias=True, attn_drop=0., proj_drop=0.):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.max_seq_len = max_seq_len
-        # Generate the sinusoidal arrays.
-        factor = math.log(10000)
-        denominator = torch.exp(-factor * torch.arange(0, self.embed_dim, 2) /
-                                self.embed_dim)
-        # Matrix where rows correspond to a positional embedding as a function
-        # of the position index (i.e., the row index).
-        frequencies = \
-            torch.arange(0, self.max_seq_len) \
-            .reshape(self.max_seq_len, 1) * denominator
-        pos_idx_to_embed = torch.zeros((self.max_seq_len, self.embed_dim))
-        # Populate uneven entries.
-        pos_idx_to_embed[:, 0::2] = torch.sin(frequencies)
-        pos_idx_to_embed[:, 1::2] = torch.cos(frequencies)
-        # Save the positional embeddings in a constant buffer.
-        # self.register_buffer("pos_idx_to_embed", pos_idx_to_embed)
-        self.pos_idx_to_embed = nn.Parameter(pos_idx_to_embed,
-                                             requires_grad=False)
+        self.dim = dim
+        self.window_size = to_2tuple(window_size)  # Wh, Ww
+        win_h, win_w = self.window_size
+        self.window_area = win_h * win_w
+        self.num_heads = num_heads
+        head_dim = head_dim or dim // num_heads
+        attn_dim = head_dim * num_heads
+        self.scale = head_dim ** -0.5
+        self.fused_attn = True
 
-    def forward(self, seq_embeds: torch.Tensor) -> torch.Tensor:
+        # define a parameter table of relative position bias, shape: 2*Wh-1 * 2*Ww-1, nH
+        self.relative_position_bias_table = nn.Parameter(torch.zeros((2 * win_h - 1) * (2 * win_w - 1), num_heads))
+
+        # get pair-wise relative position index for each token inside the window
+        self.register_buffer("relative_position_index", get_relative_position_index(win_h, win_w), persistent=False)
+
+        self.qkv = nn.Linear(dim, attn_dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(attn_dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        trunc_normal_(self.relative_position_bias_table, std=.02)
+        self.softmax = nn.Softmax(dim=-1)
+
+    def _get_rel_pos_bias(self) -> torch.Tensor:
+        relative_position_bias = self.relative_position_bias_table[
+            self.relative_position_index.view(-1)].view(self.window_area, self.window_area, -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+        return relative_position_bias.unsqueeze(0)
+
+    def forward(self, x, mask: Optional[torch.Tensor] = None):
         """
         Args:
-            seq_embeds: The sequence embeddings in order. Allowed size:
-                1. [T, D], where T is the length of the sequence, and D is the
-                frame embedding dimension.
-                2. [B, T, D], where B is the batch size and T and D are the
-                same as above.
-        Returns a tensor of with the same dimensions as the input: i.e.,
-        [1, T, D] or [T, D].
+            x: input features with shape of (num_windows*B, N, C)
+            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
-        shape_len = len(seq_embeds.shape)
-        assert 2 <= shape_len <= 3
-        len_seq = seq_embeds.size(-2)
-        assert len_seq <= self.max_seq_len
-        pos_embeds = self.pos_idx_to_embed[0:seq_embeds.size(-2), :]
-        # Adapt pre-computed positional embeddings to the input.
-        if shape_len == 3:
-            pos_embeds = pos_embeds.view(
-                (1, pos_embeds.size(0), pos_embeds.size(1)))
-        return pos_embeds
+        B_, N, C = x.shape
+        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
 
-@dataclass
-# Copied from transformers.models.swin.modeling_swin.SwinEncoderOutput with Swin->DonutSwin
-class DonutSwinEncoderOutput(ModelOutput):
+        if self.fused_attn:
+            attn_mask = self._get_rel_pos_bias()
+            if mask is not None:
+                num_win = mask.shape[0]
+                mask = mask.view(1, num_win, 1, N, N).expand(B_ // num_win, -1, self.num_heads, -1, -1)
+                attn_mask = attn_mask + mask.reshape(-1, self.num_heads, N, N)
+            x = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.attn_drop.p if self.training else 0.,
+            )
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            attn = attn + self._get_rel_pos_bias()
+            if mask is not None:
+                num_win = mask.shape[0]
+                attn = attn.view(-1, num_win, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+                attn = attn.view(-1, self.num_heads, N, N)
+            attn = self.softmax(attn)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B_, N, -1)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class Mlp(nn.Module):
+    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
+
+    NOTE: When use_conv=True, expects 2D NCHW tensors, otherwise N*C expected.
     """
-    DonutSwin encoder's outputs, with potential hidden states and attentions.
+
+    def __init__(self, vllm_config: VllmConfig, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU,
+                 bias=True, prefix: str = ""):
+        super().__init__()
+        config = vllm_config.model_config.hf_config
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        bias = to_2tuple(bias)
+
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias[0])
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias[1])
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.fc2(x)
+        return x
+
+
+class SwinTransformerBlock(nn.Module):
+    r""" Swin Transformer Block.
 
     Args:
-        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the model.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
-            shape `(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each stage) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-        reshaped_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
-            shape `(batch_size, hidden_size, height, width)`.
-
-            Hidden-states of the model at the output of each layer plus the initial embedding outputs reshaped to
-            include the spatial dimensions.
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resulotion.
+        window_size (int): Window size.
+        num_heads (int): Number of attention heads.
+        head_dim (int): Enforce the number of channels per head
+        shift_size (int): Shift size for SW-MSA.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
+        drop (float, optional): Dropout rate. Default: 0.0
+        attn_drop (float, optional): Attention dropout rate. Default: 0.0
+        drop_path (float, optional): Stochastic depth rate. Default: 0.0
+        act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    reshaped_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    def __init__(
+            self, vllm_config: VllmConfig, dim, input_resolution, num_heads=4, head_dim=None, window_size=7,
+            shift_size=0, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU,
+            norm_layer=nn.LayerNorm, prefix: str = ""):
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+        if min(self.input_resolution) <= self.window_size:
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
 
-@dataclass
-# Copied from transformers.models.swin.modeling_swin.SwinModelOutput with Swin->DonutSwin
-class DonutSwinModelOutput(ModelOutput):
-    """
-    DonutSwin model's outputs that also contains a pooling of the last hidden states.
+        self.norm1 = norm_layer(dim)
+        self.attn = WindowAttention(
+            dim, num_heads=num_heads, head_dim=head_dim, window_size=to_2tuple(self.window_size),
+            qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp(vllm_config, in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer,
+                       prefix=prefix)
+
+        if self.shift_size > 0:
+            # calculate attention mask for SW-MSA
+            H, W = self.input_resolution
+            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+            cnt = 0
+            for h in (
+                    slice(0, -self.window_size),
+                    slice(-self.window_size, -self.shift_size),
+                    slice(-self.shift_size, None)):
+                for w in (
+                        slice(0, -self.window_size),
+                        slice(-self.window_size, -self.shift_size),
+                        slice(-self.shift_size, None)):
+                    img_mask[:, h, w, :] = cnt
+                    cnt += 1
+            mask_windows = window_partition(img_mask, self.window_size)  # num_win, window_size, window_size, 1
+            mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        else:
+            attn_mask = None
+
+        self.register_buffer("attn_mask", attn_mask, persistent=False)
+
+    def forward(self, x):
+        H, W = self.input_resolution
+        B, L, C = x.shape
+        _assert(L == H * W, "input feature has wrong size")
+
+        shortcut = x
+        x = self.norm1(x)
+        x = x.view(B, H, W, C)
+
+        # cyclic shift
+        if self.shift_size > 0:
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+        else:
+            shifted_x = x
+
+        # partition windows
+        x_windows = window_partition(shifted_x, self.window_size)  # num_win*B, window_size, window_size, C
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # num_win*B, window_size*window_size, C
+
+        # W-MSA/SW-MSA
+        attn_windows = self.attn(x_windows, mask=self.attn_mask)  # num_win*B, window_size*window_size, C
+
+        # merge windows
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+
+        # reverse cyclic shift
+        if self.shift_size > 0:
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+        else:
+            x = shifted_x
+        x = x.view(B, H * W, C)
+
+        # FFN
+        x = shortcut + self.drop_path(x)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        return x
+
+
+class PatchMerging(nn.Module):
+    r""" Patch Merging Layer.
 
     Args:
-        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the model.
-        pooler_output (`torch.FloatTensor` of shape `(batch_size, hidden_size)`, *optional*, returned when `add_pooling_layer=True` is passed):
-            Average pooling of the last layer hidden-state.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
-            shape `(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each stage) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-        reshaped_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
-            shape `(batch_size, hidden_size, height, width)`.
-
-            Hidden-states of the model at the output of each layer plus the initial embedding outputs reshaped to
-            include the spatial dimensions.
+        input_resolution (tuple[int]): Resolution of input feature.
+        dim (int): Number of input channels.
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    pooler_output: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    reshaped_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    def __init__(self, input_resolution, dim, out_dim=None, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.out_dim = out_dim or 2 * dim
+        self.norm = norm_layer(4 * dim)
+        self.reduction = nn.Linear(4 * dim, self.out_dim, bias=False)
 
+    def forward(self, x):
+        """
+        x: B, H*W, C
+        """
+        H, W = self.input_resolution
+        B, L, C = x.shape
+        _assert(L == H * W, "input feature has wrong size")
+        _assert(H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even.")
+
+        x = x.view(B, H, W, C)
+
+        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
+        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
+        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
+        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 C
+        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
+        x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
+
+        x = self.norm(x)
+        x = self.reduction(x)
+
+        return x
+
+
+class BasicLayer(nn.Module):
+    """ A basic Swin Transformer layer for one stage.
+
+    Args:
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resolution.
+        depth (int): Number of blocks.
+        num_heads (int): Number of attention heads.
+        head_dim (int): Channels per head (dim // num_heads if not set)
+        window_size (int): Local window size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
+        drop (float, optional): Dropout rate. Default: 0.0
+        attn_drop (float, optional): Attention dropout rate. Default: 0.0
+        drop_path (float | tuple[float], optional): Stochastic depth rate. Default: 0.0
+        norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
+        downsample (nn.Module | None, optional): Downsample layer at the end of the layer. Default: None
+    """
+
+    def __init__(self, vllm_config: VllmConfig, dim, out_dim, input_resolution, depth, num_heads=4, head_dim=None,
+                 window_size=7, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.,
+                 norm_layer=nn.LayerNorm, downsample=None, prefix: str = ""):
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.depth = depth
+
+        # build blocks
+        self.blocks = nn.Sequential(*[
+            SwinTransformerBlock(
+                vllm_config=vllm_config, dim=dim, input_resolution=input_resolution, num_heads=num_heads,
+                head_dim=head_dim, window_size=window_size, shift_size=0 if (i % 2 == 0) else window_size // 2,
+                mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop, attn_drop=attn_drop,
+                drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path, norm_layer=norm_layer,
+                prefix=f"{prefix}.blocks.{i}",
+            )
+            for i in range(depth)])
+
+        # patch merging layer
+        if downsample is not None:
+            self.downsample = downsample(input_resolution, dim=dim, out_dim=out_dim, norm_layer=norm_layer)
+        else:
+            self.downsample = None
+
+    def forward(self, x):
+        x = self.blocks(x)
+        if self.downsample is not None:
+            x = self.downsample(x)
+        return x
+
+
+class PatchEmbed(nn.Module):
+    """ 2D Image to Patch Embedding"""
+    output_fmt: Format
+
+    def __init__(
+            self,
+            img_size: Union[int, Tuple[int, int]] = 224,
+            patch_size: int = 16,
+            in_chans: int = 3,
+            embed_dim: int = 768,
+            norm_layer: Optional[Callable] = None,
+            flatten: bool = True,
+            output_fmt: Optional[str] = None,
+            bias: bool = True,
+    ):
+        super().__init__()
+        self.patch_size = to_2tuple(patch_size)
+        self.img_size, self.grid_size, self.num_patches = self._init_img_size(img_size)
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = flatten
+            self.output_fmt = Format.NCHW
+
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def _init_img_size(self, img_size: Union[int, Tuple[int, int]]):
+        assert self.patch_size
+        if img_size is None:
+            return None, None, None
+        img_size = to_2tuple(img_size)
+        grid_size = tuple([s // p for s, p in zip(img_size, self.patch_size)])
+        num_patches = grid_size[0] * grid_size[1]
+        return img_size, grid_size, num_patches
+
+    def forward(self, x):
+        x = self.proj(x)
+        if self.flatten:
+            x = x.flatten(2).transpose(1, 2)  # NCHW -> NLC
+        x = self.norm(x)
+        return x
+
+
+class SwinTransformer(nn.Module):
+    r""" Swin Transformer
+        A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
+          https://arxiv.org/pdf/2103.14030
+
+    Args:
+        img_size (int | tuple(int)): Input image size. Default 224
+        patch_size (int | tuple(int)): Patch size. Default: 4
+        in_chans (int): Number of input image channels. Default: 3
+        num_classes (int): Number of classes for classification head. Default: 1000
+        embed_dim (int): Patch embedding dimension. Default: 96
+        depths (tuple(int)): Depth of each Swin Transformer layer.
+        num_heads (tuple(int)): Number of attention heads in different layers.
+        head_dim (int, tuple(int)):
+        window_size (int): Window size. Default: 7
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4
+        qkv_bias (bool): If True, add a learnable bias to query, key, value. Default: True
+        drop_rate (float): Dropout rate. Default: 0
+        attn_drop_rate (float): Attention dropout rate. Default: 0
+        drop_path_rate (float): Stochastic depth rate. Default: 0.1
+        norm_layer (nn.Module): Normalization layer. Default: nn.LayerNorm.
+        ape (bool): If True, add absolute position embedding to the patch embedding. Default: False
+        patch_norm (bool): If True, add normalization after patch embedding. Default: True
+    """
+
+    def __init__(
+            self, vllm_config: VllmConfig, img_size=224, patch_size=4, in_chans=3, num_classes=1000, global_pool='avg',
+            embed_dim=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), head_dim=None, window_size=7, mlp_ratio=4.,
+            qkv_bias=True, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1, norm_layer=nn.LayerNorm, ape=False,
+            patch_norm=True, prefix: str = ""):
+        super().__init__()
+        assert global_pool in ('', 'avg')
+        self.num_classes = num_classes
+        self.global_pool = global_pool
+        self.num_layers = len(depths)
+        self.embed_dim = embed_dim
+        self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
+
+        # split image into non-overlapping patches
+        self.patch_embed = PatchEmbed(
+            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
+            norm_layer=norm_layer if patch_norm else None)
+        num_patches = self.patch_embed.num_patches
+        self.patch_grid = self.patch_embed.grid_size
+
+        # absolute position embedding
+        self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim)) if ape else None
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        # build layers
+        if not isinstance(embed_dim, (tuple, list)):
+            embed_dim = [int(embed_dim * 2 ** i) for i in range(self.num_layers)]
+        embed_out_dim = embed_dim[1:] + [None]
+        head_dim = to_ntuple(self.num_layers)(head_dim)
+        window_size = to_ntuple(self.num_layers)(window_size)
+        mlp_ratio = to_ntuple(self.num_layers)(mlp_ratio)
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+        layers = []
+        for i in range(self.num_layers):
+            layers += [BasicLayer(
+                vllm_config=vllm_config,
+                dim=embed_dim[i],
+                out_dim=embed_out_dim[i],
+                input_resolution=(self.patch_grid[0] // (2 ** i), self.patch_grid[1] // (2 ** i)),
+                depth=depths[i],
+                num_heads=num_heads[i],
+                head_dim=head_dim[i],
+                window_size=window_size[i],
+                mlp_ratio=mlp_ratio[i],
+                qkv_bias=qkv_bias,
+                drop=drop_rate,
+                attn_drop=attn_drop_rate,
+                drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                norm_layer=norm_layer,
+                downsample=PatchMerging if (i < self.num_layers - 1) else None,
+                prefix=f"{prefix}.layers.{i}",
+            )]
+        self.layers = nn.Sequential(*layers)
+
+        self.norm = norm_layer(self.num_features)
+        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+
+    @torch.jit.ignore
+    def get_classifier(self):
+        return self.head
+
+    def reset_classifier(self, num_classes, global_pool=None):
+        self.num_classes = num_classes
+        if global_pool is not None:
+            assert global_pool in ('', 'avg')
+            self.global_pool = global_pool
+        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+
+    def forward_features(self, x):
+        x = self.patch_embed(x)
+        if self.absolute_pos_embed is not None:
+            x = x + self.absolute_pos_embed
+        x = self.pos_drop(x)
+        x = self.layers(x)
+        x = self.norm(x)  # B L C
+        return x
+
+    def forward_head(self, x, pre_logits: bool = False):
+        if self.global_pool == 'avg':
+            x = x.mean(dim=1)
+        return x if pre_logits else self.head(x)
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.forward_head(x)
+        return x
+
+
+class TimmSwinEncoder(SwinTransformer):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        config = vllm_config.model_config.hf_config
+        super().__init__(
+            vllm_config=vllm_config,
+            img_size=config.image_size,
+            depths=config.depths,
+            patch_size=config.patch_size,
+            window_size=config.window_size,
+            embed_dim=config.embed_dim,
+            num_heads=config.num_heads,
+            prefix=f"{prefix}.encoder",
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.patch_embed(x)
+        x = self.layers(x)
+        return x
+
+# Copied from transformers.models.swin.modeling_swin.window_partition
 def window_partition(input_feature, window_size):
     """
     Partitions the given input into windows.
@@ -267,18 +609,11 @@ class DonutSwinEmbeddings(nn.Module):
     Construct the patch and position embeddings. Optionally, also the mask token.
     """
 
-    def __init__(self, config, use_mask_token=False):
+    def __init__(self, config):
         super().__init__()
 
         self.patch_embeddings = DonutSwinPatchEmbeddings(config)
-        num_patches = self.patch_embeddings.num_patches
         self.patch_grid = self.patch_embeddings.grid_size
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.embed_dim)) if use_mask_token else None
-
-        if config.use_absolute_embeddings:
-            self.position_embeddings = nn.Parameter(torch.zeros(1, num_patches + 1, config.embed_dim))
-        else:
-            self.position_embeddings = None
 
         self.norm = nn.LayerNorm(config.embed_dim)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -311,7 +646,7 @@ class DonutSwinEmbeddings(nn.Module):
         new_height = height // self.patch_size
         new_width = width // self.patch_size
 
-        sqrt_num_positions = torch_int(num_positions**0.5)
+        sqrt_num_positions = torch_int(num_positions ** 0.5)
         patch_pos_embed = patch_pos_embed.reshape(1, sqrt_num_positions, sqrt_num_positions, dim)
         patch_pos_embed = patch_pos_embed.permute(0, 3, 1, 2)
 
@@ -327,28 +662,12 @@ class DonutSwinEmbeddings(nn.Module):
         return torch.cat((class_pos_embed, patch_pos_embed), dim=1)
 
     def forward(
-        self,
-        pixel_values: Optional[torch.FloatTensor],
-        bool_masked_pos: Optional[torch.BoolTensor] = None,
-        interpolate_pos_encoding: bool = False,
+            self,
+            pixel_values: Optional[torch.FloatTensor],
     ) -> Tuple[torch.Tensor]:
         _, num_channels, height, width = pixel_values.shape
         embeddings, output_dimensions = self.patch_embeddings(pixel_values)
         embeddings = self.norm(embeddings)
-        batch_size, seq_len, _ = embeddings.size()
-
-        if bool_masked_pos is not None:
-            mask_tokens = self.mask_token.expand(batch_size, seq_len, -1)
-            # replace the masked visual tokens by mask_tokens
-            mask = bool_masked_pos.unsqueeze(-1).type_as(mask_tokens)
-            embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
-
-        if self.position_embeddings is not None:
-            if interpolate_pos_encoding:
-                embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
-            else:
-                embeddings = embeddings + self.position_embeddings
-
         embeddings = self.dropout(embeddings)
 
         return embeddings, output_dimensions
@@ -504,6 +823,8 @@ class DonutSwinSelfAttention(nn.Module):
         self.window_size = (
             window_size if isinstance(window_size, collections.abc.Iterable) else (window_size, window_size)
         )
+        self.scale = self.attention_head_size ** -0.5
+        self.fused_attn = True
 
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
@@ -520,7 +841,8 @@ class DonutSwinSelfAttention(nn.Module):
         relative_coords[:, :, 1] += self.window_size[1] - 1
         relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
         relative_position_index = relative_coords.sum(-1)
-        self.register_buffer("relative_position_index", relative_position_index)
+        # self.register_buffer("relative_position_index", relative_position_index)
+        self.relative_position_index = nn.Parameter(relative_position_index, requires_grad=False)
 
         self.query = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
         self.key = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
@@ -533,12 +855,21 @@ class DonutSwinSelfAttention(nn.Module):
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
 
+    def _get_rel_pos_bias(self) -> torch.Tensor:
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
+        relative_position_bias = relative_position_bias.view(
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1
+        )
+
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
+        return relative_position_bias.unsqueeze(0)
+
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = False,
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.FloatTensor] = None,
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
         batch_size, dim, num_channels = hidden_states.shape
         mixed_query_layer = self.query(hidden_states)
@@ -547,40 +878,52 @@ class DonutSwinSelfAttention(nn.Module):
         value_layer = self.transpose_for_scores(self.value(hidden_states))
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
-        # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        if self.fused_attn:
+            attention_scores = self._get_rel_pos_bias()
+            if attention_mask is not None:
+                # Apply the attention mask is (precomputed for all layers in DonutSwinModel forward() function)
+                mask_shape = attention_mask.shape[0]
+                attention_mask = attention_mask.view(1, mask_shape, 1, dim, dim).expand(
+                    batch_size // mask_shape, mask_shape, self.num_attention_heads, dim, dim
+                )
+                attention_scores = attention_scores + attention_mask.unsqueeze(1).unsqueeze(0)
+                attention_scores = attention_scores.view(-1, self.num_attention_heads, dim, dim)
 
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-
-        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
-        relative_position_bias = relative_position_bias.view(
-            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1
-        )
-
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
-        attention_scores = attention_scores + relative_position_bias.unsqueeze(0)
-
-        if attention_mask is not None:
-            # Apply the attention mask is (precomputed for all layers in DonutSwinModel forward() function)
-            mask_shape = attention_mask.shape[0]
-            attention_scores = attention_scores.view(
-                batch_size // mask_shape, mask_shape, self.num_attention_heads, dim, dim
+            context_layer = torch.nn.functional.scaled_dot_product_attention(
+                query_layer, key_layer, value_layer,
+                attn_mask=attention_scores,
+                dropout_p=0.,
             )
-            attention_scores = attention_scores + attention_mask.unsqueeze(1).unsqueeze(0)
-            attention_scores = attention_scores.view(-1, self.num_attention_heads, dim, dim)
+            attention_probs = None
+        else:
+            # Take the dot product between "query" and "key" to get the raw attention scores.
+            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 
-        # Normalize the attention scores to probabilities.
-        attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+            attention_scores = attention_scores * self.scale
+            attention_scores = attention_scores + self._get_rel_pos_bias()
 
-        # This is actually dropping out entire tokens to attend to, which might
-        # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
+            if attention_mask is not None:
+                # Apply the attention mask is (precomputed for all layers in DonutSwinModel forward() function)
+                mask_shape = attention_mask.shape[0]
+                attention_scores = attention_scores.view(
+                    batch_size // mask_shape, mask_shape, self.num_attention_heads, dim, dim
+                )
+                attention_scores = attention_scores + attention_mask.unsqueeze(1).unsqueeze(0)
+                attention_scores = attention_scores.view(-1, self.num_attention_heads, dim, dim)
 
-        # Mask heads if we want to
-        if head_mask is not None:
-            attention_probs = attention_probs * head_mask
+            # Normalize the attention scores to probabilities.
+            attention_probs = nn.functional.softmax(attention_scores, dim=-1)
 
-        context_layer = torch.matmul(attention_probs, value_layer)
+            # This is actually dropping out entire tokens to attend to, which might
+            # seem a bit unusual, but is taken from the original Transformer paper.
+            attention_probs = self.dropout(attention_probs)
+
+            # Mask heads if we want to
+            if head_mask is not None:
+                attention_probs = attention_probs * head_mask
+
+            context_layer = torch.matmul(attention_probs, value_layer)
+
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
@@ -631,11 +974,11 @@ class DonutSwinAttention(nn.Module):
         self.pruned_heads = self.pruned_heads.union(heads)
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = False,
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.FloatTensor] = None,
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
         self_outputs = self.self(hidden_states, attention_mask, head_mask, output_attentions)
         attention_output = self.output(self_outputs[0], hidden_states)
@@ -731,12 +1074,12 @@ class DonutSwinLayer(nn.Module):
         return hidden_states, pad_values
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        input_dimensions: Tuple[int, int],
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = False,
-        always_partition: Optional[bool] = False,
+            self,
+            hidden_states: torch.Tensor,
+            input_dimensions: Tuple[int, int],
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = False,
+            always_partition: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not always_partition:
             self.set_shift_and_window_size(input_dimensions)
@@ -827,12 +1170,12 @@ class DonutSwinStage(nn.Module):
         self.pointing = False
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        input_dimensions: Tuple[int, int],
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = False,
-        always_partition: Optional[bool] = False,
+            self,
+            hidden_states: torch.Tensor,
+            input_dimensions: Tuple[int, int],
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = False,
+            always_partition: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
         height, width = input_dimensions
         for i, layer_module in enumerate(self.blocks):
@@ -870,315 +1213,145 @@ class DonutSwinEncoder(nn.Module):
             [
                 DonutSwinStage(
                     config=config,
-                    dim=int(config.embed_dim * 2**i_layer),
-                    input_resolution=(grid_size[0] // (2**i_layer), grid_size[1] // (2**i_layer)),
+                    dim=int(config.embed_dim * 2 ** i_layer),
+                    input_resolution=(grid_size[0] // (2 ** i_layer), grid_size[1] // (2 ** i_layer)),
                     depth=config.depths[i_layer],
                     num_heads=config.num_heads[i_layer],
-                    drop_path=dpr[sum(config.depths[:i_layer]) : sum(config.depths[: i_layer + 1])],
+                    drop_path=dpr[sum(config.depths[:i_layer]): sum(config.depths[: i_layer + 1])],
                     downsample=DonutSwinPatchMerging if (i_layer < self.num_layers - 1) else None,
                 )
                 for i_layer in range(self.num_layers)
             ]
         )
 
-        self.gradient_checkpointing = False
-
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        input_dimensions: Tuple[int, int],
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = False,
-        output_hidden_states: Optional[bool] = False,
-        output_hidden_states_before_downsampling: Optional[bool] = False,
-        always_partition: Optional[bool] = False,
-        return_dict: Optional[bool] = True,
-    ) -> Union[Tuple, DonutSwinEncoderOutput]:
-        all_hidden_states = () if output_hidden_states else None
-        all_reshaped_hidden_states = () if output_hidden_states else None
-        all_self_attentions = () if output_attentions else None
-
-        if output_hidden_states:
-            batch_size, _, hidden_size = hidden_states.shape
-            # rearrange b (h w) c -> b c h w
-            reshaped_hidden_state = hidden_states.view(batch_size, *input_dimensions, hidden_size)
-            reshaped_hidden_state = reshaped_hidden_state.permute(0, 3, 1, 2)
-            all_hidden_states += (hidden_states,)
-            all_reshaped_hidden_states += (reshaped_hidden_state,)
-
+            self,
+            hidden_states: torch.Tensor,
+            input_dimensions: Tuple[int, int],
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = False,
+            always_partition: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
         for i, layer_module in enumerate(self.layers):
             layer_head_mask = head_mask[i] if head_mask is not None else None
 
-            if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    layer_module.__call__,
-                    hidden_states,
-                    input_dimensions,
-                    layer_head_mask,
-                    output_attentions,
-                    always_partition,
-                )
-            else:
-                layer_outputs = layer_module(
-                    hidden_states, input_dimensions, layer_head_mask, output_attentions, always_partition
-                )
+            layer_outputs = layer_module(
+                hidden_states, input_dimensions, layer_head_mask, output_attentions, always_partition
+            )
 
             hidden_states = layer_outputs[0]
-            hidden_states_before_downsampling = layer_outputs[1]
             output_dimensions = layer_outputs[2]
 
             input_dimensions = (output_dimensions[-2], output_dimensions[-1])
 
-            if output_hidden_states and output_hidden_states_before_downsampling:
-                batch_size, _, hidden_size = hidden_states_before_downsampling.shape
-                # rearrange b (h w) c -> b c h w
-                # here we use the original (not downsampled) height and width
-                reshaped_hidden_state = hidden_states_before_downsampling.view(
-                    batch_size, *(output_dimensions[0], output_dimensions[1]), hidden_size
-                )
-                reshaped_hidden_state = reshaped_hidden_state.permute(0, 3, 1, 2)
-                all_hidden_states += (hidden_states_before_downsampling,)
-                all_reshaped_hidden_states += (reshaped_hidden_state,)
-            elif output_hidden_states and not output_hidden_states_before_downsampling:
-                batch_size, _, hidden_size = hidden_states.shape
-                # rearrange b (h w) c -> b c h w
-                reshaped_hidden_state = hidden_states.view(batch_size, *input_dimensions, hidden_size)
-                reshaped_hidden_state = reshaped_hidden_state.permute(0, 3, 1, 2)
-                all_hidden_states += (hidden_states,)
-                all_reshaped_hidden_states += (reshaped_hidden_state,)
-
-            if output_attentions:
-                all_self_attentions += layer_outputs[3:]
-
-        if not return_dict:
-            return tuple(v for v in [hidden_states, all_hidden_states, all_self_attentions] if v is not None)
-
-        return DonutSwinEncoderOutput(
-            last_hidden_state=hidden_states,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attentions,
-            reshaped_hidden_states=all_reshaped_hidden_states,
-        )
+        return hidden_states
 
 
 class DonutSwinModel(nn.Module):
-    def __init__(self, config, add_pooling_layer=True, use_mask_token=False, prefix: str = ""):
-        r"""
-        add_pooling_layer (bool, *optional*, defaults to `True`):
-            Whether to add a pooling layer
-        use_mask_token (`bool`, *optional*, defaults to `False`):
-            Whether to use a mask token for masked image modeling.
-        """
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.num_layers = len(config.depths)
         self.num_features = int(config.embed_dim * 2 ** (self.num_layers - 1))
 
-        self.embeddings = DonutSwinEmbeddings(config, use_mask_token=use_mask_token)
+        self.embeddings = DonutSwinEmbeddings(config)
         self.encoder = DonutSwinEncoder(config, self.embeddings.patch_grid)
 
-        self.pooler = nn.AdaptiveAvgPool1d(1) if add_pooling_layer else None
-
-    def get_input_embeddings(self):
-        return self.embeddings.patch_embeddings
-
-    def _prune_heads(self, heads_to_prune):
-        """
-        Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer} See base
-        class PreTrainedModel
-        """
-        for layer, heads in heads_to_prune.items():
-            self.encoder.layer[layer].attention.prune_heads(heads)
-
     def forward(
-        self,
-        pixel_values: Optional[torch.FloatTensor] = None,
-        bool_masked_pos: Optional[torch.BoolTensor] = None,
-        head_mask: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        interpolate_pos_encoding: bool = False,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, DonutSwinModelOutput]:
-        r"""
-        bool_masked_pos (`torch.BoolTensor` of shape `(batch_size, num_patches)`):
-            Boolean masked positions. Indicates which patches are masked (1) and which aren't (0).
-        """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        if pixel_values is None:
-            raise ValueError("You have to specify pixel_values")
-
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x n_heads x N x N
-        # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
-        # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
-        head_mask = self.get_head_mask(head_mask, len(self.config.depths))
-
-        embedding_output, input_dimensions = self.embeddings(
-            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
-        )
+            self,
+            pixel_values: Optional[torch.FloatTensor] = None,
+            head_mask: Optional[torch.FloatTensor] = None,
+            output_attentions: Optional[bool] = None,
+    ) -> Tuple[torch.Tensor]:
+        embedding_output, input_dimensions = self.embeddings(pixel_values)
 
         encoder_outputs = self.encoder(
             embedding_output,
             input_dimensions,
             head_mask=head_mask,
             output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
         )
 
-        sequence_output = encoder_outputs[0]
+        return encoder_outputs
 
-        pooled_output = None
-        if self.pooler is not None:
-            pooled_output = self.pooler(sequence_output.transpose(1, 2))
-            pooled_output = torch.flatten(pooled_output, 1)
+    @classmethod
+    def from_config(cls, config):
+        return cls(config=config)
 
-        if not return_dict:
-            output = (sequence_output, pooled_output) + encoder_outputs[1:]
+class DolphinVisionModel(nn.Module, SupportsV0Only):
+    main_input_name = "pixel_values"
 
-            return output
-
-        return DonutSwinModelOutput(
-            last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-            reshaped_hidden_states=encoder_outputs.reshaped_hidden_states,
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__()
+        config = vllm_config.model_config.hf_config
+        self.config = config
+        self.timm_model = TimmSwinEncoder(
+            vllm_config=vllm_config,
+            prefix=f"{prefix}.timm_model"
         )
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        elif isinstance(module, DonutSwinEmbeddings):
-            if module.mask_token is not None:
-                module.mask_token.data.zero_()
-            if module.position_embeddings is not None:
-                module.position_embeddings.data.zero_()
-        elif isinstance(module, DonutSwinSelfAttention):
-            module.relative_position_bias_table.data.zero_()
-
-    # --- 请将此方法完整地放入您的顶层模型类 (e.g., DonutForEmbedding) 中 ---
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> Set[str]:
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        r"""
+        Args:
+            pixel_values
+                torch.Tensor of *encoder* input pixel values.
+        Returns:
+            Output torch.Tensor
         """
-        一个完全手动的权重加载函数，用于精确控制名称匹配。
-        此版本能够正确区分并加载模型的参数（Parameters）和缓冲区（Buffers），
-        并能与 vLLM 提供的 default_weight_loader 兼容。
+        return self.timm_model(pixel_values)
+
+
+class DolphinLanguageForConditionalGeneration(nn.Module, SupportsV0Only):
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        super().__init__()
+
+        config = vllm_config.model_config.hf_config
+
+        self.config = config
+        self.model = MBartDecoderWrapper(vllm_config=vllm_config,
+                                         prefix=f"{prefix}.model")
+        embed_scale = math.sqrt(
+            config.d_model) if config.scale_embedding else 1.0
+
+        self.vocab_size = config.vocab_size
+        self.lm_head = BartParallelLMHead(self.vocab_size, config.d_model, embed_scale=embed_scale)
+
+        self.logits_processor = LogitsProcessor(self.vocab_size, config.vocab_size)
+
+    def forward(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            inputs_embeds: torch.Tensor,
+            **kwargs,
+    ) -> torch.Tensor:
+        r"""
+        Args:
+            input_ids
+                torch.Tensor of *decoder* input token ids.
+            positions
+                torch.Tensor of *decoder* position indices.
+        Returns:
+            Output torch.Tensor
         """
-        # 步骤 1: 创建一个包含模型所有状态（参数 和 缓冲区）的查找字典
-        params_dict = dict(self.named_parameters())
-        params_dict.update(dict(self.named_buffers()))
 
-        loaded_params: set[str] = set()
+        return self.model(
+            decoder_input_ids=input_ids,
+            decoder_positions=positions,
+            encoder_hidden_states=inputs_embeds)
 
-        for name, loaded_weight in weights:
-            # 步骤 2: 对权重名称进行必要的转换（目前只针对 Decoder）
-            if name.startswith("model.decoder."):
-                name = name.replace("model.decoder.", "decoder.", 1)
-            
-            # encoder.encoder.xxx 的名称已经匹配，无需转换
-
-            # 步骤 3: 查找并加载
-            if name in params_dict:
-                param = params_dict[name]
-                
-                # ------------------- 关键修正逻辑 -------------------
-                # 判断 param 的类型，以决定加载方式
-                if not isinstance(param, torch.nn.Parameter):
-                    # 如果不是 nn.Parameter，说明它是一个缓冲区 (普通张量)
-                    # 普通张量没有 .data 属性，直接用 copy_() 加载
-                    param.copy_(loaded_weight)
-                else:
-                    # 如果是 nn.Parameter，则使用 vLLM 提供的加载器
-                    # (getattr 的用法是为了兼容可能存在的自定义加载器)
-                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
-                    weight_loader(param, loaded_weight)
-                # ----------------------------------------------------
-                
-                loaded_params.add(name)
-            else:
-                print(f"!! [Warning] Weight from file not found in model: {name}")
-
-        # (可选) 检查模型中哪些参数没有在权重文件中找到
-        model_keys = set(params_dict.keys())
-        unloaded_keys = model_keys - loaded_params
-        if unloaded_keys:
-            # 过滤掉一些已知不会加载的参数，避免不必要的警告
-            # 例如，Dolphin 模型的 lm_head 和 final_logits_bias 不在 encoder/decoder 中
-            known_unloaded = {"lm_head.weight", "final_logits_bias"}
-            unloaded_keys -= known_unloaded
-            if unloaded_keys:
-                print(f"== [Info] Model states not loaded from file: {unloaded_keys}")
-
-        return loaded_params
-    
-class DonutDecoder(BartDecoder):
-    """
-    通过继承 VllmBartDecoder，添加缺失的 final layer_norm。
-    """
-    def __init__(self, config, cache_config, quant_config, lora_config=None, prefix: str = ""):
-        # 1. 首先，完整地初始化父类（VllmBartDecoder）
-        super().__init__(config=config, 
-                         cache_config=cache_config, 
-                         quant_config=quant_config,
-                         lora_config=lora_config,
-                         prefix=prefix)
-        
-        # 2. 然后，在相同的层级下，添加原始模型中存在的 layer_norm
-        #    self.config 是父类保存的 decoder config
-        self.layer_norm = nn.LayerNorm(config.d_model, eps=1e-5)
-
-    def forward(self, *args, **kwargs):
-        # 3. 调用父类的 forward 方法，获取其原始输出（即 hidden_states）
-        hidden_states = super().forward(*args, **kwargs)
-        hidden_states = self.layer_norm(hidden_states)
-        return hidden_states
-
-class DonutDecoderWrapper(nn.Module):
-    def __init__(self, config, cache_config=None, quant_config=None, prefix: str = ""):
-        super().__init__()
-        self.config = config
-        self.decoder = DonutDecoder(config=config,
-                        cache_config=cache_config,
-                        quant_config=quant_config,
-                        prefix=prefix)
-
-    def forward(self, *args, **kwargs):
-        return self.decoder(*args, **kwargs)
-
-class DonutDecoderForCausalLM(nn.Module):
-    def __init__(self, config, cache_config=None, quant_config=None, prefix: str = ""):
-        super().__init__()
-        self.config = config
-        self.model = DonutDecoderWrapper(config=config,
-                        cache_config=cache_config,
-                        quant_config=quant_config,
-                        prefix=prefix)
-        
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-
-    def forward(self, *args, **kwargs):
-        normalized_states = self.model(*args, **kwargs)
-        logits = self.lm_head(normalized_states)
-        
+    def compute_logits(
+            self,
+            hidden_states: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
+    ) -> Optional[torch.Tensor]:
+        logits = self.logits_processor(self.lm_head, hidden_states,
+                                       sampling_metadata)
         return logits
-    
+
     def load_weights(self, weights: Iterable[tuple[str,
-                                                   torch.Tensor]]) -> set[str]:
+    torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
             ("qkv_proj", "q_proj", "q"),
@@ -1210,7 +1383,13 @@ class DonutDecoderForCausalLM(nn.Module):
         return loaded_params
 
 
-class DonutProcessingInfo(BaseProcessingInfo):
+class DolphinImagePixelInputs(TypedDict):
+    type: Literal["pixel_values"]
+    data: torch.Tensor
+    """Shape: (batch_size, num_channel, height, width)"""
+
+
+class DolphinProcessingInfo(BaseProcessingInfo):
 
     def get_hf_config(self):
         return self.ctx.get_hf_config()
@@ -1222,87 +1401,54 @@ class DonutProcessingInfo(BaseProcessingInfo):
         return {"image": 1}
 
     def get_num_image_tokens(self) -> int:
-        """
-        Calculates the number of image tokens (patches) from the
-        encoder's configuration.
-        """
-        # 1. 获取模型的主配置，而不是图像处理器配置
-        model_config = self.get_hf_config()
-
-        # 2. 从主配置中获取编码器（Swin Transformer）的特定配置
-        encoder_config = model_config.encoder
-
-        # 3. 从编码器配置中提取图像尺寸和patch尺寸
-        image_height, image_width = encoder_config.image_size
-        patch_size = encoder_config.patch_size
-
-        # 4. 计算patch的数量，即图像token的数量
-        # 使用整数除法 // 确保结果是整数
-        num_patches = (image_height // patch_size) * (image_width // patch_size)
-
-        return num_patches
+        return 1
 
 
-class DonutDummyInputsBuilder(
-        BaseDummyInputsBuilder[DonutProcessingInfo]):
+class DolphinDummyInputsBuilder(
+    BaseDummyInputsBuilder[DolphinProcessingInfo]):
 
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         return ""
 
     def get_dummy_mm_data(
-        self,
-        seq_len: int,
-        mm_counts: Mapping[str, int],
+            self,
+            seq_len: int,
+            mm_counts: Mapping[str, int],
     ) -> MultiModalDataDict:
         num_images = mm_counts.get("image", 0)
 
         target_width, target_height = self.info.get_hf_config().encoder.image_size
 
         return {
-            "image":
-            self._get_dummy_images(width=target_width,
-                                   height=target_height,
-                                   num_images=num_images)
+            "image": self._get_dummy_images(width=target_width, height=target_height, num_images=num_images)
         }
 
 
-class DonutMultiModalProcessor(
-        EncDecMultiModalProcessor[DonutProcessingInfo]):
+class DolphinMultiModalProcessor(
+    EncDecMultiModalProcessor[DolphinProcessingInfo]):
 
     def _hf_processor_applies_updates(
             self,
             prompt_text: str,
             mm_items: MultiModalDataItems,
             hf_processor_mm_kwargs: Mapping[str, object],
-            tokenization_kwargs: Mapping[str, object],  # <--- 在这里添加缺失的参数
-        ) -> bool:
-            return False
+            tokenization_kwargs: Mapping[str, object],
+    ) -> bool:
+        return False
 
     def create_encoder_prompt(
-        self,
-        prompt: Union[str, list[int]],
-        mm_data: MultiModalDataDict,
+            self,
+            prompt: Union[str, list[int]],
+            mm_data: MultiModalDataDict,
     ) -> Union[str, list[int]]:
         return prompt
 
     def create_decoder_prompt(
-        self,
-        prompt: Union[str, list[int]],
-        mm_data: MultiModalDataDict,
+            self,
+            prompt: Union[str, list[int]],
+            mm_data: MultiModalDataDict,
     ) -> Union[str, list[int]]:
-        return [self.info.get_hf_config().eos_token_id]
-
-    def _apply_hf_processor_tokens_only(
-        self,
-        prompt_tokens: list[int],
-    ) -> list[int]:
-        hf_processor = self.info.get_hf_processor()
-        tokenizer: BartTokenizer = hf_processor.tokenizer
-        prompt_text = tokenizer.decode(prompt_tokens)
-        # convert task tokens to prompt
-        prompt_text = hf_processor._construct_prompts([prompt_text])[0]
-        prompt_tokens = tokenizer.encode(prompt_text, add_special_tokens=False)
-        return prompt_tokens
+        return prompt
 
     def _call_hf_processor(
             self,
@@ -1310,38 +1456,36 @@ class DonutMultiModalProcessor(
             mm_data: Mapping[str, object],
             mm_kwargs: Mapping[str, object],
             tok_kwargs: Mapping[str, object],
-        ) -> BatchFeature:
-            hf_processor = self.info.get_hf_processor()
-            if mm_data:
-                processed_outputs = hf_processor(
-                    images=mm_data.get("images"),
-                    return_tensors="pt"
-                )
-                if "input_ids" not in processed_outputs:
-                    processed_outputs["input_ids"] = torch.tensor([[]])
-
-            else:
-                tokenizer = hf_processor.tokenizer
-                final_tok_kwargs = dict(return_tensors="pt", **tok_kwargs)
-                processed_outputs = tokenizer(prompt, **final_tok_kwargs)
-
-            return processed_outputs
+    ) -> BatchFeature:
+        hf_processor = self.info.get_hf_processor()
+        if mm_data:
+            processed_outputs = super()._call_hf_processor(
+                prompt, mm_data, mm_kwargs, tok_kwargs)
+            if isinstance(hf_processor, NougatProcessor):
+                processed_outputs["input_ids"] = processed_outputs["labels"]
+        else:
+            tokenizer = hf_processor.tokenizer
+            processed_outputs = tokenizer(prompt,
+                                          add_special_tokens=False,
+                                          return_tensors="pt")
+        return processed_outputs
 
     def _get_mm_fields_config(
-        self,
-        hf_inputs: BatchFeature,
-        hf_processor_mm_kwargs: Mapping[str, object],
+            self,
+            hf_inputs: BatchFeature,
+            hf_processor_mm_kwargs: Mapping[str, object],
     ) -> Mapping[str, MultiModalFieldConfig]:
         return dict(pixel_values=MultiModalFieldConfig.batched("image"))
 
     def _get_prompt_updates(
-        self,
-        mm_items: MultiModalDataItems,
-        hf_processor_mm_kwargs: Mapping[str, object],
-        out_mm_kwargs: MultiModalKwargs,
+            self,
+            mm_items: MultiModalDataItems,
+            hf_processor_mm_kwargs: Mapping[str, object],
+            out_mm_kwargs: MultiModalKwargs,
     ) -> Sequence[PromptUpdate]:
-        hf_config = self.info.get_hf_config()
-        pad_token_id = hf_config.pad_token_id
+        hf_processor = self.info.get_hf_processor()
+        tokenizer = hf_processor.tokenizer
+        pad_token_id = tokenizer.pad_token_id
         num_image_tokens = self.info.get_num_image_tokens()
         image_tokens = [pad_token_id] * num_image_tokens
 
@@ -1355,34 +1499,37 @@ class DonutMultiModalProcessor(
 
 
 @MULTIMODAL_REGISTRY.register_processor(
-    DonutMultiModalProcessor,
-    info=DonutProcessingInfo,
-    dummy_inputs=DonutDummyInputsBuilder)
-class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
-                                        SupportsV0Only):
+    DolphinMultiModalProcessor,
+    info=DolphinProcessingInfo,
+    dummy_inputs=DolphinDummyInputsBuilder)
+class DolphinForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsV0Only):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
-        cache_config = vllm_config.cache_config
-        quant_config = vllm_config.quant_config
         processor_config = vllm_config.model_config.hf_image_processor_config
 
         self.config = config
-        self.encoder_config = config.encoder
+        self.vision_config = config.encoder
         self.processor_config = processor_config
-        assert config.encoder.model_type == 'donut-swin', (
-            'only Swin is supported for now')
-        self.encoder = DonutSwinModel(config=config.encoder, prefix=f"{prefix}.encoder")
-        # self._build_image_projection_layers(config)
-        self.decoder = DonutDecoderForCausalLM(config=config.decoder,
-                                   cache_config=cache_config,
-                                   quant_config=quant_config,
-                                   prefix=f"{prefix}.decoder")
+        if config.encoder.model_type == "donut-swin":
+            self.encoder = DonutSwinModel.from_config(config=config.encoder)
+        elif config.encoder.model_type == "dolphin_vision":
+            self.encoder = DolphinVisionModel(
+                vllm_config=vllm_config.with_hf_config(config.encoder),
+                prefix=f"{prefix}.encoder",
+            )
+        else:
+            raise ValueError(f"Unsupported encoder model type: {config.encoder.model_type}")
+
+        self.decoder = DolphinLanguageForConditionalGeneration(
+            vllm_config=vllm_config.with_hf_config(config.decoder),
+            prefix=f"{prefix}.decoder",
+        )
         self.pad_token_id = config.pad_token_id
 
     def _validate_pixel_values(
-        self, data: Union[torch.Tensor, list[torch.Tensor]]
+            self, data: Union[torch.Tensor, list[torch.Tensor]]
     ) -> Union[torch.Tensor, list[torch.Tensor]]:
 
         size = self.processor_config["size"]
@@ -1405,13 +1552,11 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
 
     def _parse_and_validate_image_input(self, **kwargs: object):
         pixel_values: Optional[Union[list[list[torch.Tensor]],
-                                     list[torch.Tensor],
-                                     torch.Tensor]] = kwargs.pop(
-                                         "pixel_values", None)
+        list[torch.Tensor],
+        torch.Tensor]] = kwargs.pop("pixel_values", None)
         image_embeds: Optional[Union[list[list[torch.Tensor]],
-                                     list[torch.Tensor],
-                                     torch.Tensor]] = kwargs.pop(
-                                         "image_embeds", None)
+        list[torch.Tensor],
+        torch.Tensor]] = kwargs.pop("image_embeds", None)
 
         if pixel_values is None and image_embeds is None:
             return None
@@ -1421,7 +1566,7 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
                 "Both pixel values and image embeds are provided.")
 
         if pixel_values is not None:
-            return DonutImagePixelInputs(
+            return DolphinImagePixelInputs(
                 type="pixel_values",
                 data=self._validate_pixel_values(
                     flatten_bn(pixel_values, concat=True)),
@@ -1432,94 +1577,31 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
 
         raise AssertionError("This line should be unreachable.")
 
-    def _encode_image(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        dtype = next(self.vision_tower.parameters()).dtype
-        pixel_values = pixel_values.to(dtype)
-
-        batch_size, T = pixel_values.size(0), 1
-        x = self.vision_tower.forward_features_unpool(pixel_values)
-        if self.image_pos_embed is not None:
-            x = x.view(batch_size * T, -1, x.shape[-1])
-            num_tokens = x.shape[-2]
-            h, w = int(num_tokens**0.5), int(num_tokens**0.5)
-            assert h * w == num_tokens, (
-                'only support square feature maps for now')
-            x = x.view(batch_size * T, h, w, x.shape[-1])
-            pos_embed = self.image_pos_embed(x)
-            x = x + pos_embed
-            x = x.view(batch_size, T * h * w, x.shape[-1])
-
-        if self.visual_temporal_embed is not None:
-            visual_temporal_embed = self.visual_temporal_embed(
-                x.view(batch_size, T, -1, x.shape[-1])[:, :, 0])
-            x = x.view(batch_size, T, -1,
-                       x.shape[-1]) + visual_temporal_embed.view(
-                           1, T, 1, x.shape[-1])
-
-        x_feat_dict = {}
-
-        spatial_avg_pool_x = x.view(batch_size, T, -1, x.shape[-1]).mean(dim=2)
-        x_feat_dict['spatial_avg_pool'] = spatial_avg_pool_x
-
-        temporal_avg_pool_x = x.view(batch_size, T, -1,
-                                     x.shape[-1]).mean(dim=1)
-        x_feat_dict['temporal_avg_pool'] = temporal_avg_pool_x
-
-        x = x.view(batch_size, T, -1, x.shape[-1])[:, -1]
-        x_feat_dict['last_frame'] = x
-
-        new_x = []
-        for _image_feature_source in self.image_feature_source:
-            if _image_feature_source not in x_feat_dict:
-                raise ValueError('invalid image feature source: {}'.format(
-                    _image_feature_source))
-            new_x.append(x_feat_dict[_image_feature_source])
-
-        x = torch.cat(new_x, dim=1)
-
-        x = x @ self.image_projection
-        x = self.image_proj_norm(x)
-
-        return x
-
-    def _process_image_input(
-            self, image_input: DonutImagePixelInputs) -> torch.Tensor:
+    def _process_image_input(self, image_input: DolphinImagePixelInputs) -> torch.Tensor:
         assert image_input["type"] == "pixel_values"
         pixel_values = image_input["data"]
-        return self._encode_image(pixel_values)
+        dtype = next(self.encoder.parameters()).dtype
+        pixel_values = pixel_values.to(dtype)
+        return self.encoder(pixel_values)
 
     def get_language_model(self) -> torch.nn.Module:
-        return self.language_model
+        return self.decoder
 
-    def get_multimodal_embeddings(
-            self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
+    def get_multimodal_embeddings(self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
         image_input = self._parse_and_validate_image_input(**kwargs)
         if image_input is None:
             return None
         vision_embeddings = self._process_image_input(image_input)
         return vision_embeddings
 
-    def get_input_embeddings(
-        self,
-        input_ids: torch.Tensor,
-        multimodal_embeddings: Optional[MultiModalEmbeddings] = None,
-    ) -> torch.Tensor:
-        inputs_embeds = self.language_model.get_input_embeddings(input_ids)
-        if multimodal_embeddings is not None:
-            inputs_embeds = merge_multimodal_embeddings(
-                input_ids, inputs_embeds, multimodal_embeddings,
-                self.pad_token_id)
-        return inputs_embeds
-
     def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-        *,
-        encoder_input_ids: torch.Tensor,
-        encoder_positions: torch.Tensor,
-        **kwargs,
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            *,
+            encoder_input_ids: torch.Tensor,
+            encoder_positions: torch.Tensor,
+            **kwargs,
     ) -> torch.Tensor:
         r"""
         Args:
@@ -1534,29 +1616,25 @@ class DonutForConditionalGeneration(nn.Module, SupportsMultiModal,
         Returns:
             Output torch.Tensor
         """
-        vision_embeddings = self.get_multimodal_embeddings(**kwargs)
-        if encoder_input_ids.numel() > 0 or vision_embeddings is not None:
-            inputs_embeds = self.get_input_embeddings(encoder_input_ids,
-                                                      vision_embeddings)
-        else:
-            inputs_embeds = None
 
-        hidden_states = self.language_model(input_ids,
-                                            positions,
-                                            encoder_input_ids,
-                                            encoder_positions,
-                                            inputs_embeds=inputs_embeds)
+        inputs_embeds = None
+        if encoder_input_ids.numel() > 0:
+            vision_embeddings = self.get_multimodal_embeddings(**kwargs)
+            inputs_embeds = _flatten_embeddings(vision_embeddings)
+
+        hidden_states = self.decoder(input_ids,
+                                     positions,
+                                     inputs_embeds=inputs_embeds)
         return hidden_states
 
     def compute_logits(
-        self,
-        hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
+            self,
+            hidden_states: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
-        return self.language_model.compute_logits(hidden_states,
-                                                  sampling_metadata)
+        return self.decoder.compute_logits(hidden_states,
+                                           sampling_metadata)
 
-    def load_weights(self, weights: Iterable[tuple[str,
-                                                   torch.Tensor]]) -> set[str]:
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights)
