@@ -65,11 +65,3 @@ for output in outputs:
           f"\nGenerated text: {generated_text!r}")
 
     print("------" * 8)
-
-# ------------------------------------------------
-# Decoder prompt: 'Parse the reading order of this document.',
-# Generated text: ' [0.25,0.12,0.75,0.15] title[PAIR_SEP][0.32,0.20,0.68,0.21] author[PAIR_SEP][0.38,0.21,0.62,0.24] para[PAIR_SEP][0.34,0.24,0.65,0.27] para[PAIR_SEP][0.38,0.31,0.62,0.51] fig[PAIR_SEP][0.47,0.52,0.53,0.53] sec[PAIR_SEP][0.29,0.55,0.71,0.67] para[PAIR_SEP][0.25,0.70,0.35,0.71] sec[PAIR_SEP][0.25,0.73,0.75,0.88] para[PAIR_SEP][0.27,0.89,0.45,0.90] fnote[PAIR_SEP][0.25,0.92,0.41,0.94] foot[PAIR_SEP][0.14,0.28,0.16,0.70] watermark'
-# ------------------------------------------------
-# Decoder prompt: 'Parse the reading order of this document.',
-# Generated text: ' [0.25,0.12,0.75,0.15] title[PAIR_SEP][0.32,0.20,0.68,0.21] author[PAIR_SEP][0.38,0.21,0.62,0.24] para[PAIR_SEP][0.34,0.24,0.65,0.27] para[PAIR_SEP][0.38,0.31,0.62,0.51] fig[PAIR_SEP][0.47,0.52,0.53,0.53] sec[PAIR_SEP][0.29,0.55,0.71,0.67] para[PAIR_SEP][0.25,0.70,0.35,0.71] sec[PAIR_SEP][0.25,0.73,0.75,0.88] para[PAIR_SEP][0.27,0.89,0.45,0.90] fnote[PAIR_SEP][0.25,0.92,0.41,0.94] foot[PAIR_SEP][0.14,0.28,0.16,0.70] watermark'
-# ------------------------------------------------
