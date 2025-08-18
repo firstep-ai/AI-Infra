@@ -509,7 +509,7 @@ class SwinStage(nn.Module):
             SwinLayer(
                 config=config,
                 dim=dim,
-                num_heads=num_heads,
+                num_heads=num_heads[i],
                 input_resolution=input_resolution,
                 drop_path_rate=drop_path_rates[i],
                 shift_size=0 if (i % 2 == 0) else config.window_size // 2,
@@ -688,61 +688,3 @@ class SwinVisionModel(nn.Module):
                 loaded_params.add(name)
 
         return loaded_params
-
-
-class SwinForImageClassification(nn.Module):
-    """
-    Swin Model with an image classification head on top (a linear layer on top
-    of the pooled final hidden states).
-    """
-    config_class = SwinConfig
-
-    def __init__(
-        self,
-        config: SwinConfig,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
-        super().__init__()
-        self.config = config
-        self.swin = SwinVisionModel(
-            config,
-            quant_config,
-            add_pooling_layer=True,
-        )
-        self.classifier = nn.Linear(self.swin.vision_model.num_features,
-                                    config.num_labels)
-
-    def forward(
-        self,
-        pixel_values: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Returns:
-            torch.Tensor: logits
-        """
-        _, pooled_output = self.swin(pixel_values)
-        logits = self.classifier(pooled_output)
-        return logits
-
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
-        """
-        Loads the weights from a Hugging Face checkpoint into the model.
-        """
-        swin_weights = []
-        classifier_weights = {}
-        for name, loaded_weight in weights:
-            if name.startswith("swin."):
-                swin_weights.append((name[len("swin."):], loaded_weight))
-            elif name.startswith("classifier."):
-                classifier_weights[name] = loaded_weight
-
-        # Load weights for the base Swin model
-        self.swin.load_weights(swin_weights)
-
-        # Load weights for the classifier head
-        params_dict = dict(self.classifier.named_parameters())
-        for name, param in params_dict.items():
-            full_name = f"classifier.{name}"
-            if full_name in classifier_weights:
-                loaded_weight = classifier_weights[full_name]
-                default_weight_loader(param, loaded_weight)
