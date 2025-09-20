@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "vLLM Serve Donut",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "vllm.entrypoints.openai.api_server",
+            "args": [
+                "--model",
+                "naver-clova-ix/donut-base-finetuned-docvqa",
+                "--served-model-name",
+                "naver-clova-ix--donut-base-finetuned-docvqa",
+                "--hf_overrides",
+                "{\"architectures\": [\"DonutForConditionalGeneration\"]}",
+                "--max_num_seqs",
+                "2"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Debug Encoder Decoder Multimodal",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/offline_inference/encoder_decoder_multimodal.py",
+            "args": [
+                "-m",
+                "donut"
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
