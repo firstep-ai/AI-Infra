@@ -14,7 +14,9 @@
                 "--hf_overrides",
                 "{\"architectures\": [\"DonutForConditionalGeneration\"]}",
                 "--max_num_seqs",
-                "2"
+                "2",
+                "--chat-template",
+                "template.jinja"
             ],
             "justMyCode": false
         },
