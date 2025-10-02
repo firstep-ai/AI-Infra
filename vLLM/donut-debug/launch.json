@@ -30,9 +30,6 @@
                 "donut"
             ],
             "justMyCode": false,
-            "env": {
-                "PYTHONUNBUFFERED": "1"
-            },
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }
