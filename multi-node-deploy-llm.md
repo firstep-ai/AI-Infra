@@ -24,15 +24,15 @@ zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl exec -it job-debb12475319e8df-master-0 -n
 ### Master Pod (节点1)
 
 ```bash
-vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
+    /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
     --tensor-parallel-size 8 \
     --enable-expert-parallel \
     --data-parallel-size 2 \
     --data-parallel-size-local 1 \
     --data-parallel-address 10.244.184.197 \
     --data-parallel-rpc-port 13345 \
-    --all2all-backend deepep_low_latency \
-    --api-server-count=8 \
+    --api-server-count 8 \
     --cpu-offload-gb 300 \
     --gpu-memory-utilization 0.95
 ```
@@ -40,7 +40,7 @@ vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_ru
 ### Worker Pod (节点2)
 
 ```bash
-vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
     --tensor-parallel-size 8 \
     --enable-expert-parallel \
     --data-parallel-size 2 \
@@ -48,7 +48,6 @@ vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_ru
     --data-parallel-start-rank 1 \
     --data-parallel-address 10.244.184.197 \
     --data-parallel-rpc-port 13345 \
-    --all2all-backend deepep_low_latency \
     --headless \
     --cpu-offload-gb 300 \
     --gpu-memory-utilization 0.95
