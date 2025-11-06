@@ -6,7 +6,7 @@ cd vllm
 
 VLLM_USE_PRECOMPILED=1 pip install --editable .
 
-VLLM_USE_PRECOMPILED=1 pip install —editable . --extra-index-url https://download.pytorch.org/whl/cu129 --index-strategy unsafe-best-match
+VLLM_USE_PRECOMPILED=1 uv pip install --editable . --extra-index-url https://download.pytorch.org/whl/cu129 --index-strategy unsafe-best-match --prerelease=allow
 
 ## pre-commit 检测
 
