@@ -6,23 +6,23 @@
 
 ```bash
 # 使用构建脚本（推荐）
-./build.sh my-project v1.0
+./build.sh vllm-prebuild v1.0
 
 # 或手动构建
 docker build --platform linux/amd64 \
-  -t gcr.io/mde-cloud/image-repo/my-project:python3.13-cu126-v1.0 .
+  -t gcr.io/mde-cloud/image-repo/vllm-prebuild:python3.13-cu126-v1.0 .
 ```
 
 ### 2. 推送到 GCR
 
 ```bash
-docker push gcr.io/mde-cloud/image-repo/my-project:python3.13-cu126-v1.0
+docker push gcr.io/mde-cloud/image-repo/vllm-prebuild:python3.13-cu126-v1.0
 ```
 
 ### 3. 在 HPC 集群使用
 
 ```yaml
-image: gcr.io/mde-cloud/image-repo/my-project:python3.13-cu126-v1.0
+image: gcr.io/mde-cloud/image-repo/vllm-prebuild:python3.13-cu126-v1.0
 ```
 
 ## 📦 镜像内容
