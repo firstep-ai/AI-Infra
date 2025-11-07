@@ -1,0 +1,86 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist/
+build/
+*.egg
+.pytest_cache
+.coverage
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (except README.docker.md)
+*.md
+!README.docker.md
+
+# Data and models
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+*.pkl
+*.npy
+*.npz
+
+# Logs
+*.log
+logs/
+tmp/
+
+# Tests
+test/
+tests/
+*_test.py
+test_*.py
+
+# Project directories
+papers/
+Benchmark/
+DeepSpeed/
+learning_triton/
+LMCache/
+SGLang/
+vLLM/
+端到端LLM服务架构/
+3D 并行/
+examples/
+
+# Media files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+
+# Config files
+*.json
+!package.json
+launch.json
+

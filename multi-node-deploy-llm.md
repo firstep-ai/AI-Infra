@@ -18,38 +18,35 @@ zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl get pods -n proj-tango | grep debb1247531
 job-debb12475319e8df-master-0               1/1     Running                  0          15m
 job-debb12475319e8df-worker-0               1/1     Running                  0          15m
 zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl get pod job-debb12475319e8df-master-0 -n proj-tango -o jsonpath='{.status.podIP}'
-10.244.184.197
+10.244.76.240
 zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl exec -it job-debb12475319e8df-master-0 -n proj-tango -- bash
 
 ### Master Pod (节点1)
 
 ```bash
-VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
-    /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors \
     --tensor-parallel-size 8 \
     --enable-expert-parallel \
     --data-parallel-size 2 \
     --data-parallel-size-local 1 \
-    --data-parallel-address 10.244.184.197 \
+    --data-parallel-address 10.244.76.240 \
     --data-parallel-rpc-port 13345 \
     --api-server-count 8 \
-    --cpu-offload-gb 300 \
     --gpu-memory-utilization 0.95
 ```
 
 ### Worker Pod (节点2)
 
 ```bash
-VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors \
     --tensor-parallel-size 8 \
     --enable-expert-parallel \
     --data-parallel-size 2 \
     --data-parallel-size-local 1 \
     --data-parallel-start-rank 1 \
-    --data-parallel-address 10.244.184.197 \
+    --data-parallel-address 10.244.76.240 \
     --data-parallel-rpc-port 13345 \
     --headless \
-    --cpu-offload-gb 300 \
     --gpu-memory-utilization 0.95
 ```
 
