@@ -27,3 +27,15 @@ pytest -v -s tests/models/multimodal/processing/test_common.py -k "omni-research
 vllm serve Qwen/Qwen3-1.7B --enable-reasoning --reasoning-parser qwen3
 
 vllm bench serve --model Qwen/Qwen3-1.7B --num-prompts 100 --random-input-len 1024 --random-output-len 1024 --ignore-eos
+
+
+## profile
+
+```
+VLLM_TORCH_PROFILER_DIR="vllm_profile" vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --limit-mm-per-prompt.video 0 --max-model-len 10000
+```
+
+```
+vllm bench serve --backend openai-chat --model Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --endpoint /v1/chat/completions --dataset-name hf --dataset-path lmarena-ai/VisionArena-Chat --hf-split train --num-prompts 5 --profile
+```
+使用 https://ui.perfetto.dev/ 分析更方便哟！！！
