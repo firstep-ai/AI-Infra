@@ -21,33 +21,41 @@ zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl get pod job-debb12475319e8df-master-0 -n 
 10.244.76.240
 zhipeng.wang@SG-GY4GTWLW0T ~ % kubectl exec -it job-debb12475319e8df-master-0 -n proj-tango -- bash
 
-### Master Pod (节点1)
+
+
+### 使用 Ray 进行多节点部署（推荐）
+
+vLLM 的多节点部署应该使用 Ray，而不是手动的 Data Parallel：
 
 ```bash
-VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors \
-    --tensor-parallel-size 8 \
-    --enable-expert-parallel \
-    --data-parallel-size 2 \
-    --data-parallel-size-local 1 \
-    --data-parallel-address 10.244.76.240 \
-    --data-parallel-rpc-port 13345 \
-    --api-server-count 8 \
-    --gpu-memory-utilization 0.95
-```
+# Master 节点
+ray start --head --port=6379
 
-### Worker Pod (节点2)
+# Worker 节点
+ray start --address=<MASTER_IP>:6379
 
-```bash
-VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors \
-    --tensor-parallel-size 8 \
+# 在Master 节点查看ray状态
+ray status
+
+# 然后在 Master 节点启动 vLLM
+VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
+    /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+    --tensor-parallel-size 16 \
     --enable-expert-parallel \
-    --data-parallel-size 2 \
-    --data-parallel-size-local 1 \
-    --data-parallel-start-rank 1 \
-    --data-parallel-address 10.244.76.240 \
-    --data-parallel-rpc-port 13345 \
-    --headless \
-    --gpu-memory-utilization 0.95
+    --gpu-memory-utilization 0.85 \
+    --host 0.0.0.0 \
+    --port 8000 
+
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "/proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is the capital of France?"}
+    ],
+    "max_completion_tokens": 30
+  }'
 ```
 
 ## 关键参数变化
