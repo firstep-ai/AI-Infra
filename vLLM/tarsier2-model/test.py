@@ -4,7 +4,6 @@ from vllm.assets.image import ImageAsset
 from vllm.multimodal.image import convert_image_mode
 
 if __name__ == "__main__":
-    EXAMPLE_IMAGE_PATH = "kitty.jpg"
     llm = LLM(
         model="omni-research/Tarsier2-Recap-7b",
         hf_overrides={"architectures": ["Tarsier2ForConditionalGeneration"]},
