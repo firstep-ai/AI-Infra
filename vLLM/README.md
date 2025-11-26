@@ -4,7 +4,7 @@ git clone https://github.com/vllm-project/vllm.git
 
 cd vllm
 
-VLLM_USE_PRECOMPILED=1 pip install --editable .
+VLLM_USE_PRECOMPILED=1 uv pip install --editable .
 
 VLLM_USE_PRECOMPILED=1 uv pip install --editable . --extra-index-url https://download.pytorch.org/whl/cu129 --index-strategy unsafe-best-match --prerelease=allow
 
@@ -38,4 +38,10 @@ VLLM_TORCH_PROFILER_DIR="vllm_profile" vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct
 ```
 vllm bench serve --backend openai-chat --model Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --endpoint /v1/chat/completions --dataset-name hf --dataset-path lmarena-ai/VisionArena-Chat --hf-split train --num-prompts 5 --profile
 ```
+额外环境变量：
+- VLLM_TORCH_PROFILER_RECORD_SHAPES=1（记录张量 shape）
+- VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=1（记录内存）
+- VLLM_TORCH_PROFILER_WITH_STACK=1（记录堆栈，默认开启）
+- VLLM_TORCH_PROFILER_WITH_FLOPS=1（记录 FLOPs）
+
 使用 https://ui.perfetto.dev/ 分析更方便哟！！！
