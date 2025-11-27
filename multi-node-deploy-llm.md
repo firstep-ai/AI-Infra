@@ -12,73 +12,85 @@ ray start --address=<MASTER_IP>:6379
 # 在Master 节点查看ray状态
 ray status
 
-# 然后在 Master 节点启动 vLLM
-CUDA_LAUNCH_BLOCKING=1 VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
-    /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes \
+```
+VLLM_TORCH_PROFILER_DIR="dsrnn_profile" CUDA_LAUNCH_BLOCKING=1 VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
+    /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors \
     --tensor-parallel-size 16 \
     --enable-expert-parallel \
     --gpu-memory-utilization 0.85 \
     --host 0.0.0.0 \
-    --port 8000
-
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "/proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "What is the capital of France?"}
-    ],
-    "max_completion_tokens": 30
-  }'
-
-vllm bench serve --model /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors_test_johanes --num-prompts 1000 --random-input-len 1238 --random-output-len 231 --ignore-eos
+    --port 8000 \
+    --enforce-eager
 ```
 
-VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
-    /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors \
+```
+vllm bench serve --backend openai-chat --model /proj-tango-pvc/users/frd_eng/models/meti/distillation/large_part0_run0/bck/checkpoint-1550/safetensors --endpoint /v1/chat/completions --dataset-name hf --dataset-path mgoin/mlperf-inference-llama2-data --hf-split train --num-prompts 2 --profile
+```
+
+```
+============ Serving Benchmark Result ============
+Successful requests:                     2         
+Benchmark duration (s):                  64.74     
+Total input tokens:                      169       
+Total generated tokens:                  377       
+Request throughput (req/s):              0.03      
+Output token throughput (tok/s):         5.82      
+Peak output token throughput (tok/s):    8.00      
+Peak concurrent requests:                2.00      
+Total Token throughput (tok/s):          8.43      
+---------------Time to First Token----------------
+Mean TTFT (ms):                          506.68    
+Median TTFT (ms):                        506.68    
+P99 TTFT (ms):                           649.32    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          262.09    
+Median TPOT (ms):                        262.09    
+P99 TPOT (ms):                           267.59    
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           258.80    
+Median ITL (ms):                         253.48    
+P99 ITL (ms):                            441.73    
+==================================================
+```
+
+
+```
+VLLM_TORCH_PROFILER_DIR="ds_profile" CUDA_LAUNCH_BLOCKING=1 VLLM_ALL2ALL_BACKEND=deepep_low_latency vllm serve \
+    /proj-tango-pvc/models/DeepSeek-V3-0324-BF16 \
     --tensor-parallel-size 16 \
     --enable-expert-parallel \
     --gpu-memory-utilization 0.85 \
     --host 0.0.0.0 \
-    --port 8000 
+    --port 8000 \
+    --enforce-eager
+```
 
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "/proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "What is the capital of France?"}
-    ],
-    "max_completion_tokens": 30
-  }'
+```
+vllm bench serve --backend openai-chat --model /proj-tango-pvc/models/DeepSeek-V3-0324-BF16 --endpoint /v1/chat/completions --dataset-name hf --dataset-path mgoin/mlperf-inference-llama2-data --hf-split train --num-prompts 2 --profile
+```
 
-vllm bench serve --model /proj-tango-pvc/users/akramusman01/models/dsrnn/x7_run4/checkpoint-32000/safetensors --num-prompts 1000 --random-input-len 653 --random-output-len 113 --ignore-eos
-
-
-9B Benchmark
-
+```
 ============ Serving Benchmark Result ============
-Successful requests:                     1000      
-Benchmark duration (s):                  29.06     
-Total input tokens:                      652000    
-Total generated tokens:                  113000    
-Request throughput (req/s):              34.41     
-Output token throughput (tok/s):         3888.48   
-Peak output token throughput (tok/s):    7992.00   
-Peak concurrent requests:                1000.00   
-Total Token throughput (tok/s):          26324.69  
+Successful requests:                     5         
+Benchmark duration (s):                  7.55      
+Total input tokens:                      521       
+Total generated tokens:                  924       
+Request throughput (req/s):              0.66      
+Output token throughput (tok/s):         122.42    
+Peak output token throughput (tok/s):    160.00    
+Peak concurrent requests:                5.00      
+Total Token throughput (tok/s):          191.45    
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          8954.25   
-Median TTFT (ms):                        8811.07   
-P99 TTFT (ms):                           15809.88  
+Mean TTFT (ms):                          499.68    
+Median TTFT (ms):                        529.28    
+P99 TTFT (ms):                           530.14    
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          140.17    
-Median TPOT (ms):                        142.19    
-P99 TPOT (ms):                           152.97    
+Mean TPOT (ms):                          28.92     
+Median TPOT (ms):                        28.55     
+P99 TPOT (ms):                           30.84     
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           140.21    
-Median ITL (ms):                         129.70    
-P99 ITL (ms):                            185.05    
+Mean ITL (ms):                           28.39     
+Median ITL (ms):                         27.43     
+P99 ITL (ms):                            33.27     
 ==================================================
+```

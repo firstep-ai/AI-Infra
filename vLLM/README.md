@@ -36,7 +36,7 @@ VLLM_TORCH_PROFILER_DIR="vllm_profile" vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct
 ```
 
 ```
-vllm bench serve --backend openai-chat --model Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --endpoint /v1/chat/completions --dataset-name hf --dataset-path lmarena-ai/VisionArena-Chat --hf-split train --num-prompts 5 --profile
+vllm bench serve --backend openai-chat --model Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 --endpoint /v1/chat/completions --dataset-name hf --dataset-path mgoin/mlperf-inference-llama2-data --hf-split train --num-prompts 5 --profile
 ```
 额外环境变量：
 - VLLM_TORCH_PROFILER_RECORD_SHAPES=1（记录张量 shape）
