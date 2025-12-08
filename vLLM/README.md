@@ -18,9 +18,12 @@ pre-commit run --files vllm/transformers_utils/config.py
 
 ## 单元测试
 
-pip install pytest tensorizer>=2.9.0 pytest-forked pytest-asyncio pytest-rerunfailures pytest-shard pytest-timeout
+pip install pytest tensorizer>=2.9.0 pytest-forked pytest-asyncio pytest-rerunfailures pytest-shard pytest-timeout tblib
 
-pytest -v -s tests/models/multimodal/processing/test_common.py -k "omni-research/Tarsier2-Recap-7b"
+pytest tests/models/multimodal/processing/test_common.py -k "ByteDance-Seed/BAGEL-7B-MoT"
+
+pytest tests/models/multimodal/processing/test_tensor_schema.py -k "ByteDance-Seed/BAGEL-7B-MoT"
+
 
 ## benchmark 测试
 
